@@ -1,0 +1,36 @@
+# Deploy the Thermite site to GitHub Pages.
+#
+# This lives in the WEBSITE repository (thermite-web), which is a different
+# repository from anyone's build crucible. It has no path filter on jobs/**,
+# no build workflow, and no way to start a compilation. Pushing the site can
+# never pour anything — that separation is structural, not conventional.
+name: Deploy site
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,38 @@
+name: Thermite sweep
+
+on:
+  schedule:
+    # 17 past, every 6 hours. Off the hour on purpose: the top of the hour is
+    # the most congested cron slot on GitHub and is the one most likely to be
+    # dropped entirely.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'List what would be removed without removing it'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write     # delete job directories, log files, releases and tags
+  actions: read       # read run status. Never write: cleanup cannot cancel a pour.
+
+concurrency:
+  group: thermite-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0     # sweep needs history to date each pour
+
+      - name: Remove spent pours
+        run: node scripts/sweep.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          THERMITE_DRY_RUN: ${{ inputs.dry_run }}

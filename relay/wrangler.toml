@@ -1,0 +1,9 @@
+name = "thermite-relay"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Exact origin of your Pages site. No wildcards.
+ALLOWED_ORIGIN = "https://YOUR-USER.github.io"
+
+# GITHUB_CLIENT_SECRET is set with: wrangler secret put GITHUB_CLIENT_SECRET

@@ -1,0 +1,217 @@
+name: Thermite pour
+
+# Only pushes to main that touch jobs/** can reach this workflow at all.
+# The seed commit, workflow upgrades and README edits are filtered out here,
+# before a run is even created. Cleanup commits DO touch jobs/** (they delete
+# from it) and are stopped by the detect job instead.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'jobs/**'
+
+# Floor. The pour job raises exactly what it needs and nothing else.
+permissions:
+  contents: read
+
+# Keyed on the commit SHA, so no two pours ever share a group and nothing can
+# ever cancel anything. This exists only to collapse a duplicate push of the
+# same commit. Do not change this to ${{ github.ref }} — that is the bug that
+# makes a new build kill the previous one.
+concurrency:
+  group: thermite-pour-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Read the commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      found:        ${{ steps.detect.outputs.found }}
+      id:           ${{ steps.detect.outputs.id }}
+      toolchain:    ${{ steps.detect.outputs.toolchain }}
+      target:       ${{ steps.detect.outputs.target }}
+      project_type: ${{ steps.detect.outputs.project_type }}
+      entry:        ${{ steps.detect.outputs.entry }}
+      sealed:         ${{ steps.detect.outputs.sealed }}
+      sealed_source:  ${{ steps.detect.outputs.sealed_source }}
+      sealed_artifact: ${{ steps.detect.outputs.sealed_artifact }}
+      name:         ${{ steps.detect.outputs.name }}
+      runner:       ${{ steps.detect.outputs.runner }}
+      sandbox:      ${{ steps.detect.outputs.sandbox }}
+      apt:          ${{ steps.detect.outputs.apt }}
+      linker:       ${{ steps.detect.outputs.linker }}
+      ext:          ${{ steps.detect.outputs.ext }}
+      pack:         ${{ steps.detect.outputs.pack }}
+      reason:       ${{ steps.detect.outputs.reason }}
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@v4
+        with:
+          # Explicit: build the commit that triggered this run, never the
+          # branch head. If a later pour lands while this run is queued, this
+          # run still compiles its own commit.
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Find the pour introduced by this commit
+        id: detect
+        run: node scripts/detect.mjs
+        env:
+          THERMITE_BEFORE: ${{ github.event.before }}
+
+  pour:
+    name: ${{ needs.detect.outputs.id }} · ${{ needs.detect.outputs.target }}
+    needs: detect
+    if: needs.detect.outputs.found == 'true'
+    runs-on: ${{ needs.detect.outputs.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: write        # log branch + release. Nothing else.
+    env:
+      THERMITE_JOB:          ${{ needs.detect.outputs.id }}
+      THERMITE_TOOLCHAIN:    ${{ needs.detect.outputs.toolchain }}
+      THERMITE_TARGET:       ${{ needs.detect.outputs.target }}
+      THERMITE_PROJECT_TYPE: ${{ needs.detect.outputs.project_type }}
+      THERMITE_ENTRY:        ${{ needs.detect.outputs.entry }}
+      THERMITE_NAME:         ${{ needs.detect.outputs.name }}
+      THERMITE_SANDBOX:      ${{ needs.detect.outputs.sandbox }}
+      THERMITE_APT:          ${{ needs.detect.outputs.apt }}
+      THERMITE_LINKER:       ${{ needs.detect.outputs.linker }}
+      THERMITE_EXT:          ${{ needs.detect.outputs.ext }}
+      THERMITE_PACK:         ${{ needs.detect.outputs.pack }}
+      THERMITE_SEALED:       ${{ needs.detect.outputs.sealed == 'true' && '1' || '0' }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          # Do not leave a credential in .git/config where a build.rs could
+          # read it.
+          persist-credentials: false
+
+      - name: Open the log
+        run: |
+          printf 'THERMITE_STARTED_AT=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          {
+            echo "THERMITE // pour ${THERMITE_JOB}"
+            echo "commit  ${GITHUB_SHA}"
+            echo "run     ${GITHUB_RUN_ID}"
+            echo "target  ${THERMITE_TARGET}"
+            echo "rust    ${THERMITE_TOOLCHAIN}"
+            echo "runner  ${RUNNER_OS}/${RUNNER_ARCH}"
+            echo ""
+          } | tee pour.log
+
+      - name: Start the log relay
+        # The only step before packaging that holds a token. It is handed to a
+        # detached process; the compile step below runs without one.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          nohup node scripts/relay.mjs \
+            --job "$THERMITE_JOB" --log pour.log --done pour.done \
+            > relay.out 2>&1 &
+          echo "$!" > relay.pid
+          sleep 1
+
+      - name: Unseal the charge
+        if: needs.detect.outputs.sealed_source == 'true'
+        # The ONLY step in this workflow that sees the source private key. It
+        # runs to completion before the compiler starts, so by the time any
+        # build.rs or proc macro executes, this process no longer exists.
+        env:
+          THERMITE_SOURCE_KEY: ${{ secrets.THERMITE_SOURCE_KEY }}
+        run: node scripts/unseal.mjs
+
+      - name: Install cross-compilation tools
+        if: runner.os == 'Linux' && needs.detect.outputs.apt != ''
+        run: |
+          echo "\$ apt-get install -y ${THERMITE_APT}" | tee -a pour.log
+          sudo apt-get update -qq >> pour.log 2>&1
+          # shellcheck disable=SC2086
+          sudo apt-get install -y -qq $THERMITE_APT >> pour.log 2>&1
+          echo "" | tee -a pour.log
+
+      - name: Compile
+        id: compile
+        env:
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
+          ACTIONS_RUNTIME_TOKEN: ''
+        run: bash scripts/compile.sh
+
+      - name: Cast the ingot
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/package.mjs 2>&1 | tee -a pour.log
+
+      - name: Upload the ingot as an Actions artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thermite-${{ needs.detect.outputs.id }}
+          path: ingot/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Shed the plaintext
+        if: always() && needs.detect.outputs.sealed_source == 'true'
+        # Best effort, not a guarantee: the runner VM is destroyed after the
+        # job, which is the actual assurance. See the crucible README.
+        run: |
+          rm -rf "jobs/${THERMITE_JOB}/source" cargo-messages.json || true
+          echo "##thermite:plaintext-shed"
+
+      - name: Close the log
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONCLUSION: ${{ job.status }}
+        run: |
+          if [ "$CONCLUSION" = "success" ]; then
+            printf 'SUCCESS\n' > pour.done
+            printf '\nBUILD SUCCESS\n' >> pour.log
+          elif [ "$CONCLUSION" = "cancelled" ]; then
+            printf 'CANCELLED\n' > pour.done
+            printf '\nBUILD CANCELLED\n' >> pour.log
+          else
+            printf 'FAILED\n' > pour.done
+            printf '\nBUILD FAILED\n' >> pour.log
+          fi
+          # Give the relay a beat to make its final write, then make sure one
+          # happened even if the relay died.
+          for _ in 1 2 3 4 5 6 7 8; do
+            if ! kill -0 "$(cat relay.pid 2>/dev/null)" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$(cat relay.pid 2>/dev/null)" 2>/dev/null || true
+          sleep 2
+          node scripts/relay.mjs --job "$THERMITE_JOB" --log pour.log --done pour.done &
+          RELAY_FINAL=$!
+          sleep 6
+          kill "$RELAY_FINAL" 2>/dev/null || true
+
+      - name: Summary
+        if: always()
+        env:
+          CONCLUSION: ${{ job.status }}
+        run: |
+          {
+            echo "### Thermite — pour \`${THERMITE_JOB}\`"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Result | ${CONCLUSION} |"
+            echo "| Target | \`${THERMITE_TARGET}\` |"
+            echo "| Toolchain | \`${THERMITE_TOOLCHAIN}\` |"
+            echo "| rustc | \`${THERMITE_RUSTC:-unknown}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

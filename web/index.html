@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Thermite — pour Rust into binaries</title>
+<meta name="description" content="Compile Rust for eleven targets on GitHub's own runners. No server, no queue, no account but yours.">
+<meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com data:;
+  img-src 'self' https://avatars.githubusercontent.com https://github.com data:;
+  connect-src 'self' https://api.github.com https://github.com https://objects.githubusercontent.com https://release-assets.githubusercontent.com;
+  form-action 'none';
+  base-uri 'none';
+  frame-ancestors 'none';
+">
+
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles/core.css">
+<link rel="stylesheet" href="styles/scenes.css">
+<link rel="stylesheet" href="styles/crucible.css">
+<link rel="stylesheet" href="styles/manual.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230a0b0d'/%3E%3Cpath d='M16 5 L25 27 L7 27 Z' fill='%23ff5f1f'/%3E%3C/svg%3E">
+</head>
+<body data-mode="descent">
+
+<canvas id="deck" aria-hidden="true"></canvas>
+<div id="grain" aria-hidden="true"></div>
+
+<!-- ─────────────────────────────────────────────── rig ─────────────── -->
+<header class="rig">
+  <div class="rig__mark">Thermite</div>
+  <div class="rig__spacer"></div>
+  <div class="rig__meter" id="meter" hidden>
+    <span>api</span><b id="meter-n">—</b><span>left</span>
+  </div>
+  <button class="btn btn--ghost btn--small" id="open-docs">Manual</button>
+  <button class="btn btn--ghost btn--small" id="open-terms">Terms</button>
+  <button class="btn btn--ghost btn--small" id="open-ledger" hidden>Pours</button>
+  <div class="rig__who" id="who" hidden>
+    <img id="who-avatar" alt="" width="24" height="24">
+    <span id="who-name"></span>
+    <button class="btn btn--ghost btn--small" id="sign-out">Sign out</button>
+  </div>
+</header>
+
+<!-- ────────────────────────────────────────────── rail ─────────────── -->
+<nav class="rail" aria-label="Progress through the pour">
+  <div class="rail__channel"><div class="rail__molten" id="molten"></div></div>
+  <div class="rail__stops" id="stops"></div>
+</nav>
+
+<!-- ───────────────────────────────────────────── descent ───────────── -->
+<main id="descent">
+
+  <!-- 00 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-intro" data-key="intro">
+    <div class="station__num">00 / ignition</div>
+    <div class="station__inner">
+      <p class="eyebrow">Iron oxide plus aluminium</p>
+      <h1 class="reaction" id="reaction">
+        <i class="rx-in">Fe<sub>2</sub>O<sub>3</sub> + 2Al</i>
+        <i class="rx-arrow">&rarr;</i>
+        <i class="rx-out">Al<sub>2</sub>O<sub>3</sub> + 2Fe</i>
+      </h1>
+      <p class="hero__caption">The reaction that consumes rust and pours molten iron</p>
+
+      <div class="hero__name">THERMITE</div>
+
+      <p class="hero__lede">
+        Hand it a <b>.rs</b> file or a whole cargo project. It compiles on GitHub's own
+        runners &mdash; in <b>your</b> account, on <b>your</b> quota &mdash; and hands back a
+        binary for any of eleven targets. There is no server behind this page. There is
+        no queue you are sharing. There is nothing here but a static file and your
+        GitHub account.
+      </p>
+
+      <div class="hero__facts">
+        <span>11 targets</span>
+        <span>stable, beta, nightly, or any pinned version</span>
+        <span>live logs, straight from the runner</span>
+        <span>everything swept after 24 hours</span>
+      </div>
+
+      <div class="hero__cta">
+        <button class="btn" data-goto="connect">Start a pour</button>
+        <a class="btn btn--ghost" href="#how" data-scrollto="s-how">How it works</a>
+        <button class="btn btn--ghost" id="hero-docs">Read the manual</button>
+      </div>
+    </div>
+    <div class="scrollcue">descend</div>
+  </section>
+
+  <!-- 01 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-connect" data-key="connect">
+    <div class="station__num">01 / authorise</div>
+    <div class="station__inner">
+      <p class="eyebrow">Connect GitHub</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">Your account does the work.</h2>
+      <p class="lede" style="margin-top:16px">
+        Thermite has no backend and therefore no credentials of its own. You give it a
+        fine-grained token scoped to a single repository, it lives in this tab only, and
+        it goes nowhere except <code class="mono">api.github.com</code>.
+      </p>
+
+      <ul class="perms">
+        <li><code>Administration</code> <span>Read &amp; write &mdash; only to create your build repository, once.</span></li>
+        <li><code>Contents</code> <span>Read &amp; write &mdash; write job files, read build logs.</span></li>
+        <li><code>Workflows</code> <span>Read &amp; write &mdash; install the build workflow during setup.</span></li>
+        <li><code>Actions</code> <span>Read &mdash; watch runs. Thermite cannot cancel or re-run anything.</span></li>
+        <li><code>Metadata</code> <span>Read &mdash; GitHub requires it alongside the others.</span></li>
+      </ul>
+
+      <div class="keyrow">
+        <input class="field" id="key-input" type="password" autocomplete="off" spellcheck="false"
+               placeholder="github_pat_&hellip;" aria-label="Fine-grained GitHub token">
+        <button class="btn" id="key-submit">Connect</button>
+        <a class="btn btn--ghost" id="key-make" target="_blank" rel="noopener noreferrer"
+           href="https://github.com/settings/personal-access-tokens/new">Create one</a>
+      </div>
+      <p class="muted" style="margin-top:12px">
+        Held in this tab's session storage and dropped when you close it. Nothing is
+        written to disk unless you ask for it.
+      </p>
+
+      <div id="device-alt" class="hidden" style="margin-top:20px">
+        <button class="btn btn--ghost" id="device-start">Sign in with GitHub instead</button>
+        <span class="muted" style="margin-left:12px">Uses the device flow.</span>
+      </div>
+
+      <div id="device-panel" class="hidden readout" style="margin-top:20px"></div>
+      <div id="connect-problem"></div>
+      <div id="identity" class="hidden"></div>
+      <div id="crucible-state" style="margin-top:20px"></div>
+
+      <div style="margin-top:28px" id="connect-next" class="hidden">
+        <button class="btn" data-goto="toolchain">Choose a toolchain</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 02 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-toolchain" data-key="toolchain" data-locked="true">
+    <div class="station__num">02 / toolchain</div>
+    <div class="station__inner">
+      <p class="eyebrow">Rust version</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">Which compiler?</h2>
+      <p class="lede" style="margin-top:16px">
+        Channels track whatever is current on the day you pour. Pinned versions are
+        installed with rustup on the runner, so anything Rust still publishes will work.
+      </p>
+      <div class="grid" id="channel-grid"></div>
+      <p class="eyebrow" style="margin-top:34px">Or pin a release</p>
+      <div class="grid" id="version-grid"></div>
+      <div style="margin-top:28px">
+        <button class="btn" data-goto="target" id="toolchain-next" disabled>Choose a target</button>
+      </div>
+      <div class="station__lock">Connect GitHub first &mdash; the toolchain list is the easy part.</div>
+    </div>
+  </section>
+
+  <!-- 03 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-target" data-key="target" data-locked="true">
+    <div class="station__num">03 / target</div>
+    <div class="station__inner">
+      <p class="eyebrow">Compilation target</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">Where does it have to run?</h2>
+      <p class="lede" style="margin-top:16px">
+        Native targets are built on a runner of the same architecture. Cross targets are
+        built with a cross linker and never executed here &mdash; test them on real
+        hardware before you trust them.
+      </p>
+      <div class="filters" id="target-filters"></div>
+      <div class="grid" id="target-grid"></div>
+      <div id="target-readout"></div>
+      <div style="margin-top:28px">
+        <button class="btn" data-goto="source" id="target-next" disabled>Add your source</button>
+      </div>
+      <div class="station__lock">Pick a toolchain first &mdash; it decides which targets are available.</div>
+    </div>
+  </section>
+
+  <!-- 04 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-source" data-key="source" data-locked="true">
+    <div class="station__num">04 / charge</div>
+    <div class="station__inner">
+      <p class="eyebrow">Source</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">Charge the crucible.</h2>
+
+      <div class="modeswap" role="group" aria-label="Submission type">
+        <button id="mode-single" aria-pressed="true">Single .rs file</button>
+        <button id="mode-cargo" aria-pressed="false">Cargo project .zip</button>
+      </div>
+
+      <div class="drop" id="drop" tabindex="0" role="button"
+           aria-label="Choose a file, or drop one here">
+        <div class="drop__big" id="drop-title">Drop a .rs file</div>
+        <div class="drop__hint" id="drop-hint">or click to browse &middot; up to 512 KiB</div>
+      </div>
+      <input type="file" id="file-input" class="sr-only" accept=".rs">
+
+      <div id="source-problem"></div>
+      <div id="source-card"></div>
+
+      <div style="margin-top:28px">
+        <button class="btn" data-goto="seal" id="source-next" disabled>Continue</button>
+      </div>
+      <div class="station__lock">Pick a target first &mdash; it changes what a valid submission looks like.</div>
+    </div>
+  </section>
+
+
+  <!-- 05 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-seal" data-key="seal" data-locked="true">
+    <div class="station__num">05 / seal</div>
+    <div class="station__inner">
+      <p class="eyebrow">Encrypted pour &mdash; optional</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">Seal it, or don&rsquo;t.</h2>
+      <p class="lede" style="margin-top:16px">
+        Your crucible is a <b>public</b> repository. By default your source sits in it as
+        plaintext until cleanup removes it. Sealing keeps it as ciphertext instead &mdash; and
+        seals the ingot and the build log too, because compiler errors quote your source.
+      </p>
+      <p class="muted" style="margin-top:10px;max-width:66ch">
+        This changes what is <em>stored</em>. It does not change what <em>runs</em>. The runner
+        still decrypts your source to compile it, and your build scripts still execute with full
+        privileges. Encryption is confidentiality, not a sandbox.
+        <a href="#" data-open-doc="encryption">Read the encryption chapter</a>.
+      </p>
+
+      <div class="seal" id="seal-panel">
+        <div class="seal__bar">
+          <span class="seal__title">Encrypted pour</span>
+          <button class="switch" id="seal-toggle" role="switch" aria-checked="false"
+                  aria-label="Encrypted pour">
+            <span>Off</span><span>On</span>
+          </button>
+          <div class="seal__sp"></div>
+          <span class="muted mono" id="seal-hint">Default: plaintext</span>
+        </div>
+
+        <div class="seal__body" id="seal-body" hidden>
+          <div class="seal__grid">
+            <div class="seal__pane">
+              <h4>Source encryption</h4>
+              <p>
+                Protects your project while it is stored in the public crucible. GitHub needs the
+                private half during compilation, so it lives in your repository secrets.
+              </p>
+              <div id="seal-source-checks"></div>
+              <div class="seal__actions" id="seal-source-actions"></div>
+            </div>
+            <div class="seal__pane">
+              <h4>Artifact encryption</h4>
+              <p>
+                The finished binary and the build log are published encrypted and opened only in
+                your browser. Only you ever hold this private key.
+              </p>
+              <div id="seal-artifact-checks"></div>
+              <div class="seal__actions" id="seal-artifact-actions"></div>
+            </div>
+          </div>
+          <div class="verdict" id="seal-verdict" data-ok="false"></div>
+          <div id="seal-keyout" style="padding:0 20px 20px"></div>
+        </div>
+      </div>
+
+      <div style="margin-top:28px">
+        <button class="btn" data-goto="confirm" id="seal-next">Review the pour</button>
+      </div>
+      <div class="station__lock">Add some source first.</div>
+    </div>
+  </section>
+
+  <!-- 06 ───────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-confirm" data-key="confirm" data-locked="true">
+    <div class="station__num">06 / pour</div>
+    <div class="station__inner">
+      <p class="eyebrow">Confirm</p>
+      <h2 style="font-size:clamp(28px,4vw,50px)">One commit, one run, one ingot.</h2>
+      <p class="lede" style="margin-top:16px">
+        Your files become a single commit in your crucible. That commit &mdash; not the
+        branch, not the latest state &mdash; is what gets compiled, so pours submitted
+        seconds apart never contaminate each other.
+      </p>
+      <div class="sheet" id="confirm-sheet"></div>
+
+      <div class="policy">
+        <p class="eyebrow" style="margin-top:26px">When should this pour be cleaned up?</p>
+        <div class="policy__row">
+          <select id="cleanup-policy" aria-label="Cleanup policy">
+            <option value="expire">Keep for 24 hours, then sweep it</option>
+            <option value="onReturn">Delete once I have retrieved the ingot</option>
+            <option value="onSuccess">Delete as soon as the build succeeds</option>
+          </select>
+          <select id="cleanup-failure" aria-label="Failed build policy">
+            <option value="keep">Keep failed builds for debugging</option>
+            <option value="clean">Clean up failed builds too</option>
+          </select>
+        </div>
+        <p class="muted" id="cleanup-note"></p>
+      </div>
+
+      <div class="consent" id="consent" hidden>
+        <h3>Before your first pour</h3>
+        <div id="consent-acks"></div>
+        <div class="consent__ft">
+          <label class="ack" style="padding:0">
+            <input type="checkbox" id="consent-remember">
+            <span>Remember this on this device</span>
+          </label>
+          <a href="#" id="consent-read">Read the full terms</a>
+          <span id="consent-state"></span>
+        </div>
+      </div>
+
+      <div class="ignite">
+        <button class="btn" id="pour-btn">Pour</button>
+        <p class="ignite__note" id="pour-note">
+          Uses your GitHub Actions minutes. Public repositories are unmetered.
+        </p>
+      </div>
+      <div id="pour-problem"></div>
+      <div class="station__lock">Add some source first.</div>
+    </div>
+  </section>
+
+  <!-- how ──────────────────────────────────────────────────────────── -->
+  <section class="station" id="s-how" data-key="how" style="min-height:auto">
+    <div class="station__num">— / mechanism</div>
+    <div class="station__inner">
+      <p class="eyebrow">What actually happens</p>
+      <h2 style="font-size:clamp(24px,3vw,38px)">No magic, and one honest limitation.</h2>
+      <div class="sheet" style="margin-top:24px">
+        <dl>
+          <dt>Your repository</dt>
+          <dd>A public repo called <b>thermite-crucible</b> is created on your account and lined with two workflows. It holds nothing but throwaway jobs and is safe to delete at any time.</dd>
+          <dt>The commit</dt>
+          <dd>Each pour is one commit adding <b>jobs/&lt;ulid&gt;/</b>. The workflow checks out that exact SHA and refuses any commit that adds more than one job.</dd>
+          <dt>Live logs</dt>
+          <dd>GitHub's log endpoint redirects to a host that sends no CORS headers, so a browser can never read it. Instead the runner writes its own output to a branch every 2.5 seconds and this page reads that. Slightly slower, considerably more honest.</dd>
+          <dt>The download</dt>
+          <dd>Artifacts hit the same wall, so the binary is also published as a release asset &mdash; a plain URL that needs no token and outlives your session.</dd>
+          <dt>Cleanup</dt>
+          <dd>A scheduled workflow sweeps pours after 24 hours, and checks the Actions API first so a build that is still running is never touched.</dd>
+          <dt>What it costs</dt>
+          <dd>Nothing, and no one else's quota. Actions minutes on public repositories are unmetered. Thermite caps you at 12 pours an hour so a stuck loop cannot run away.</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ───────────────────────────────────────────── furnace ───────────── -->
+<div id="furnace" role="region" aria-label="Build in progress">
+  <div class="fhead">
+    <div class="fhead__id"><small>pour</small><span id="f-id">—</span></div>
+    <div class="fhead__id"><small>commit</small><span id="f-sha">—</span></div>
+    <div class="fhead__spacer"></div>
+    <div class="fhead__clock" id="f-clock">0s</div>
+    <div class="fhead__status" id="f-status" data-tone="cold">Queued</div>
+    <button class="btn btn--ghost btn--small" id="f-back">Leave</button>
+  </div>
+
+  <div class="pipeline" id="pipeline"></div>
+
+  <div class="fbody">
+    <div class="pool">
+      <canvas id="crucible" aria-hidden="true"></canvas>
+      <div class="meta"><dl id="f-meta"></dl></div>
+    </div>
+
+    <div class="term">
+      <div class="term__bar">
+        <span class="dot" id="term-dot"></span>
+        <span id="term-title">the crucible</span>
+        <span class="sp"></span>
+        <button id="term-follow" aria-pressed="true">Follow</button>
+        <button id="term-motion" aria-pressed="true">Motion</button>
+        <button id="term-copy">Copy</button>
+      </div>
+      <div class="term__view" id="term-view" tabindex="0" role="log" aria-live="polite" aria-label="Build log">
+        <span class="term__empty">Waiting for the runner to pick this up&hellip;</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="ffoot" id="f-foot"></div>
+</div>
+
+<!-- ────────────────────────────────────────────── ledger ───────────── -->
+<aside id="ledger" aria-label="Previous pours" aria-hidden="true">
+  <div class="ledger__head">
+    <h2 class="display">Pours</h2>
+    <div class="rig__spacer" style="flex:1"></div>
+    <button class="btn btn--ghost btn--small" id="ledger-refresh">Refresh</button>
+    <button class="btn btn--ghost btn--small" id="ledger-close">Close</button>
+  </div>
+  <div class="ledger__list" id="ledger-list"></div>
+  <div style="padding:16px 22px;border-top:1px solid var(--ash);display:flex;gap:8px;flex-wrap:wrap">
+    <button class="btn btn--ghost btn--small" id="ledger-cleanall">Clean up all</button>
+    <div style="flex:1"></div>
+    <button class="btn btn--ghost btn--small" id="ledger-decommission">Decommission crucible</button>
+  </div>
+</aside>
+
+<!-- ─────────────────────────────────────────────── manual ──────────── -->
+<div class="manual" id="manual-docs" data-active="false" role="dialog" aria-modal="true" aria-label="Thermite manual">
+  <div class="manual__bar">
+    <span class="manual__plate">Thermite &middot; <b>forge manual</b></span>
+    <div class="manual__sp"></div>
+    <button class="btn btn--ghost btn--small" id="docs-to-terms">Terms</button>
+    <button class="btn btn--ghost btn--small" id="manual-close">Close</button>
+  </div>
+  <div class="manual__body">
+    <nav class="manual__index" id="docs-index" aria-label="Manual contents"></nav>
+    <div class="manual__pages" id="docs-pages"></div>
+  </div>
+</div>
+
+<div class="manual" id="manual-terms" data-active="false" role="dialog" aria-modal="true" aria-label="Thermite terms">
+  <div class="manual__bar">
+    <span class="manual__plate">Thermite &middot; <b>terms &amp; security</b></span>
+    <div class="manual__sp"></div>
+    <button class="btn btn--ghost btn--small" id="terms-manual">Manual</button>
+    <button class="btn btn--ghost btn--small" id="terms-close">Close</button>
+  </div>
+  <div class="manual__body" style="grid-template-columns:1fr">
+    <div class="manual__pages" id="terms-pages"></div>
+  </div>
+</div>
+
+<div class="sheetdim" id="dialog-host" data-open="false" role="dialog" aria-modal="true"></div>
+
+<div id="toasts" aria-live="polite"></div>
+
+<script type="module" src="js/app.js"></script>
+<noscript>
+  <div style="padding:80px 24px;max-width:60ch;margin:0 auto">
+    <h1 style="font-family:sans-serif">Thermite needs JavaScript</h1>
+    <p style="color:#b6bfcb;font-family:sans-serif">
+      Everything here happens in your browser, talking directly to GitHub's API.
+      Without scripting there is nothing to show.
+    </p>
+  </div>
+</noscript>
+</body>
+</html>
