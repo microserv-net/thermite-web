@@ -36,6 +36,7 @@ const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
 const SAMPLE = 14;          // px of vertical travel per sample point
 const HEAD_AT = 0.58;       // where down the viewport the pour head sits
+const ORIGIN_GAP = 64;      // clearance below the hero's buttons
 const BRAID = 0.34;         // phase offset of the outer strands
 
 const svgEl = (name, attrs = {}) => {
@@ -162,11 +163,25 @@ export class Spine {
   // ----------------------------------------------------------- geometry ----
 
   /**
+   * Where the thread is struck: just under the hero's buttons, not at the top
+   * of the page. The hero is the strike, everything below it is the pour.
+   */
+  originY() {
+    const intro = this.stations.find((s) => s.dataset.key === 'intro');
+    if (!intro) return 0;
+    const anchor = intro.querySelector('.hero__cta') || intro.querySelector('.station__inner');
+    if (!anchor) return intro.offsetTop + intro.offsetHeight;
+    const r = anchor.getBoundingClientRect();
+    return Math.round(r.bottom + window.scrollY + ORIGIN_GAP);
+  }
+
+  /**
    * x of the thread at a given document y.
    * Three harmonics, fixed phases: irregular to the eye, identical every load.
    */
   xAt(y, shift = 0) {
     const w = this.wave;
+    y = Math.max(y, this.startY || 0);
     return w.cx
       + w.a1 * Math.sin((y / w.l1) * TAU + w.p1 + shift)
       + w.a2 * Math.sin((y / w.l2) * TAU + w.p2 + shift * 1.6)
@@ -209,9 +224,13 @@ export class Spine {
 
     // --- sample the curve, keeping a cumulative length table so the reveal is
     //     driven from a y position instead of being guessed at.
+    // Everything from here down is measured from the strike point, so the
+    // reveal maths and the geometry share one origin.
+    this.startY = Math.min(this.originY(), docH - 1);
+
     const build = (shift) => {
       const pts = [];
-      for (let y = 0; y <= docH; y += SAMPLE) pts.push([this.xAt(y, shift), y]);
+      for (let y = this.startY; y <= docH; y += SAMPLE) pts.push([this.xAt(y, shift), y]);
       if (pts[pts.length - 1][1] < docH) pts.push([this.xAt(docH, shift), docH]);
 
       let d = `M ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
@@ -255,7 +274,8 @@ export class Spine {
   }
 
   lengthAtY(y) {
-    const i = Math.min(this.lens.length - 1, Math.max(0, Math.round(y / SAMPLE)));
+    if (y <= this.startY) return 0;
+    const i = Math.min(this.lens.length - 1, Math.max(0, Math.round((y - this.startY) / SAMPLE)));
     return this.lens[i] * this.scale;
   }
 
@@ -267,17 +287,28 @@ export class Spine {
       const card = station.querySelector('.station__inner');
       if (!card) continue;
 
-      // Centre of the card, not its edge: the station rides ON the thread.
+      // The hero is not a bead on the thread — it is where the thread starts.
+      // CSS centres it in the viewport, so JS keeps its hands off.
+      if (station.dataset.key === 'intro') {
+        station.style.removeProperty('--card-x');
+        station.style.setProperty('--drift', '0');
+        continue;
+      }
+
       const rect = card.getBoundingClientRect();
+      // Measure the card rather than assuming --card-w. Stations that override
+      // their own width (the hero does) would otherwise be positioned as if
+      // they were the default size and hang off the right-hand edge.
+      const cardW = rect.width || this.cardW;
       const cardMidY = rect.top + window.scrollY + rect.height / 2;
       const x = this.xAt(cardMidY);
 
-      const left = Math.max(gutter, Math.min(x - this.cardW / 2, this.vw - this.cardW - gutter));
+      const left = Math.max(gutter, Math.min(x - cardW / 2, this.vw - cardW - gutter));
 
       station.style.setProperty('--card-x', `${Math.round(left)}px`);
       // How far the thread is from the card's centre, so the panel can lean
       // very slightly into the curve.
-      const drift = (x - (left + this.cardW / 2)) / (this.cardW / 2);
+      const drift = (x - (left + cardW / 2)) / (cardW / 2);
       station.style.setProperty('--drift', drift.toFixed(3));
     }
   }
@@ -286,10 +317,16 @@ export class Spine {
     for (const [key, group] of this.nodes) {
       const station = this.stations.find((s) => s.dataset.key === key);
       if (!station) { group.style.display = 'none'; continue; }
-      const card = station.querySelector('.station__inner');
-      const rect = card ? card.getBoundingClientRect() : station.getBoundingClientRect();
-      // Just above the card, on the exposed run of thread between stations.
-      const y = Math.max(0, rect.top + window.scrollY - 34);
+      let y;
+      if (key === 'intro') {
+        // The ignition node sits exactly where the thread is struck.
+        y = this.startY;
+      } else {
+        const card = station.querySelector('.station__inner');
+        const rect = card ? card.getBoundingClientRect() : station.getBoundingClientRect();
+        // Just above the card, on the exposed run of thread between stations.
+        y = Math.max(this.startY, rect.top + window.scrollY - 34);
+      }
       const x = this.xAt(y);
       group.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
       const flip = x > this.vw * 0.6;
@@ -333,7 +370,10 @@ export class Spine {
     if (drawn > 2 && this.molten.getPointAtLength) {
       const p = this.molten.getPointAtLength(Math.min(drawn, this.total - 0.5));
       this.headGroup.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`);
-      this.headGroup.style.opacity = headY >= this.docH - 4 ? '0' : '1';
+      this.headGroup.style.opacity =
+        (headY >= this.docH - 4 || headY <= this.startY + 2) ? '0' : '1';
+    } else {
+      this.headGroup.style.opacity = '0';
     }
 
     document.documentElement.style.setProperty('--pour-x', `${this.xAt(headY).toFixed(1)}px`);

@@ -28,6 +28,7 @@
   padding: clamp(22px, 2.6vw, 40px);
   border: 1px solid var(--rule);
   position: relative;
+  container-type: inline-size;
   border-radius: var(--r-lg);
   /* Not fully opaque: the ghosted thread has to be visible through it. */
   background: linear-gradient(180deg, rgba(18, 21, 26, .90), rgba(13, 15, 19, .86));
@@ -97,32 +98,49 @@
 
 /* --- hero -------------------------------------------------------------- */
 
-#s-intro { min-height: 100dvh; }
-/* The hero is the one station that is not a bead on the line — the thread
-   starts here, so it runs past an open composition instead of through a panel. */
+#s-intro { min-height: 100dvh; padding-bottom: 170px; }
+/* The hero is not a bead on the thread — it is the strike. So it is centred in
+   the viewport on its own terms, open rather than panelled, and the spine
+   engine leaves its placement alone. */
 #s-intro .station__inner {
   width: min(880px, calc(100vw - 48px));
+  margin-inline: auto;
   padding: 0; border: 0; background: none;
   box-shadow: none; backdrop-filter: none;
   transform: none;
+  text-align: center;
 }
+#s-intro .station__num { display: none; }
+#s-intro .eyebrow { justify-content: center; }
+#s-intro .eyebrow::after { display: none; }
+#s-intro .hero__lede { margin-inline: auto; }
+#s-intro .hero__facts { justify-content: center; }
+#s-intro .hero__cta { justify-content: center; }
 #s-intro .station__inner::before,
 #s-intro .station__inner::after { display: none; }
 #s-intro .station__num { display: none; }
 
+/* Stacked, not inline. Inline it needed roughly 24 glyphs of width, overflowed
+   the hero, and orphaned the arrow off the right-hand edge. Stacked, each line
+   is eleven glyphs and cannot overflow — and the arrow now points the way the
+   page goes, down into the thread. Sized in cqw against the hero itself, so it
+   is never larger than the box holding it. */
 .reaction {
   font-family: var(--display);
   font-weight: 900; font-stretch: 125%;
-  font-size: clamp(34px, 7.2vw, 104px);
-  line-height: .96; letter-spacing: -.035em;
-  display: flex; flex-wrap: wrap; align-items: baseline; gap: .22em;
+  font-size: clamp(30px, 8.6cqw, 96px);
+  line-height: .98; letter-spacing: -.035em;
+  display: grid; justify-items: center; gap: .02em;
   margin: 0 0 6px;
 }
 .reaction i { font-style: normal; }
 .reaction sub { font-size: .5em; vertical-align: baseline; }
 
 .reaction .rx-in { color: #6d4130; }
-.reaction .rx-arrow { color: var(--ember); position: relative; }
+.reaction .rx-arrow {
+  color: var(--ember); position: relative;
+  font-size: .46em; line-height: 1.05;
+}
 .reaction .rx-out {
   color: var(--whitehot);
   text-shadow: 0 0 32px rgba(255,163,23,.55), 0 0 90px rgba(255,95,31,.28);
@@ -134,8 +152,8 @@
 
 @keyframes oxidise { from { color: #3a3f47; } to { color: #6d4130; } }
 @keyframes ignite {
-  0% { color: #3a3f47; transform: scale(.9); }
-  40% { color: var(--whitehot); transform: scale(1.06); }
+  0% { color: #3a3f47; transform: translateY(-.2em) scale(.9); }
+  40% { color: var(--whitehot); transform: translateY(0) scale(1.08); }
   100% { color: var(--ember); transform: none; }
 }
 @keyframes pourout {
@@ -179,18 +197,6 @@
 
 .hero__cta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 40px; align-items: center; }
 
-.scrollcue {
-  position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
-  font-family: var(--mono); font-size: 10px; letter-spacing: .24em;
-  text-transform: uppercase; color: var(--scale);
-  display: flex; flex-direction: column; align-items: center; gap: 9px;
-}
-.scrollcue::after {
-  content: ''; width: 1px; height: 34px;
-  background: linear-gradient(180deg, var(--ember), transparent);
-  animation: drip 2s var(--ease) infinite;
-}
-@keyframes drip { 0% { transform: scaleY(0); transform-origin: top; } 60%,100% { transform: scaleY(1); transform-origin: top; } }
 
 /* --- choice grids ------------------------------------------------------ */
 

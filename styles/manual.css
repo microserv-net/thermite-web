@@ -81,7 +81,15 @@ body[data-mode='terms'] .manual[data-active='true'] { display: grid; animation: 
   margin-top: 34px;
   scroll-margin-top: 20px;
 }
-.doc__chapter:first-child, .doc__section:first-child { border-top: 0; margin-top: 0; }
+/* On the terms page the first element is the <header>, not a section, so
+   :first-child never matched and the opening section carried a stray rule and
+   34px of dead space above it. */
+.doc__chapter:first-child, .doc__section:first-child,
+.doc__head + .doc__section { border-top: 0; margin-top: 0; padding-top: 8px; }
+
+/* Long paths and PEM-ish strings in the terms must not push the column wide. */
+.doc__p, .doc__list li, .qa__a { overflow-wrap: anywhere; }
+.doc__col { min-width: 0; }
 
 .doc__h2 {
   font-family: var(--display); font-weight: 800; font-stretch: 118%;

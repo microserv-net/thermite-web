@@ -109,7 +109,8 @@ a:hover { color: var(--whitehot); }
 .rig {
   position: fixed; top: 0; left: 0; right: 0; height: var(--rig-h);
   z-index: 60;
-  display: flex; align-items: center; gap: 18px;
+  display: flex; align-items: center; gap: 14px;
+  flex-wrap: nowrap;
   padding: 0 clamp(16px, 3vw, 28px);
   background: linear-gradient(180deg, rgba(10,11,13,.94), rgba(10,11,13,.55) 70%, transparent);
   backdrop-filter: blur(14px);
@@ -117,6 +118,7 @@ a:hover { color: var(--whitehot); }
 }
 
 .rig__mark {
+  flex: none; white-space: nowrap;
   font-family: var(--display); font-weight: 900; font-stretch: 125%;
   font-size: 15px; letter-spacing: .16em; color: var(--bright);
   text-transform: uppercase;
@@ -130,7 +132,8 @@ a:hover { color: var(--whitehot); }
 }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 
-.rig__spacer { flex: 1; }
+.rig__spacer { flex: 1 1 0; min-width: 0; }
+.rig .btn { flex: none; }
 
 .rig__meter {
   font-family: var(--mono); font-size: 11px; color: var(--scale);
@@ -357,6 +360,13 @@ body[data-mode='terms'] #spine,   body[data-mode='terms'] #spine-ghost {
   vertical-align: -2px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Below this the rate meter is the first thing worth dropping — it is
+   diagnostic, and the Terms button is not. */
+@media (max-width: 760px) {
+  .rig__meter { display: none; }
+  .rig__mark { font-size: 13px; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
