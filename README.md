@@ -1,4 +1,4 @@
-# Thermite
+# Thermite Web
 
 **Fe₂O₃ + 2Al → Al₂O₃ + 2Fe + heat.** The reaction that consumes rust and pours
 molten iron.
