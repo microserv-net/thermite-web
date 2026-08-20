@@ -1,6 +1,33 @@
 // THERMITE — primitives.
+//
+// Note on Web Crypto: `crypto.subtle` is only exposed in a SECURE CONTEXT.
+// `crypto.getRandomValues` is not restricted that way, which is exactly why a
+// pour used to get as far as generating a ULID and then die on the first hash
+// with "undefined is not an object". Everything that needs SubtleCrypto goes
+// through subtle() below, so the failure is named instead of thrown raw.
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/** True only where SubtleCrypto is actually available. */
+export const cryptoAvailable = () =>
+  typeof crypto !== 'undefined' && typeof crypto.subtle !== 'undefined';
+
+export class InsecureContextError extends Error {
+  constructor() {
+    super(
+      'This page is not running in a secure context, so the browser is withholding Web Crypto. ' +
+      'Thermite needs it to hash your source tree and to encrypt anything at all. ' +
+      'Serve the site over https://, or from http://localhost — a file:// path or a plain ' +
+      'http:// address on your network will not work, and that is the browser\u2019s rule, not ' +
+      'Thermite\u2019s.');
+    this.name = 'InsecureContextError';
+  }
+}
+
+export function subtle() {
+  if (!cryptoAvailable()) throw new InsecureContextError();
+  return crypto.subtle;
+}
 
 /** ULID: 48-bit ms timestamp + 80 bits of CSPRNG, Crockford base32, sortable. */
 export function ulid(now = Date.now()) {
@@ -29,7 +56,7 @@ export const enc = new TextEncoder();
 export const dec = new TextDecoder('utf-8', { fatal: false });
 
 export async function sha256Hex(bytes) {
-  const d = await crypto.subtle.digest('SHA-256', bytes);
+  const d = await subtle().digest('SHA-256', bytes);
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -103,6 +130,43 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 export const reducedMotion = () =>
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/**
+ * If Web Crypto is missing, say so once, at the top of the page, before the
+ * person spends time picking a toolchain and uploading a project only to be
+ * told at the very last step. Returns true when the environment is usable.
+ */
+export function warnIfInsecureContext() {
+  if (cryptoAvailable()) return true;
+  if (document.getElementById('insecure-banner')) return false;
+
+  const host = location.hostname;
+  const advice = location.protocol === 'file:'
+    ? 'You have opened index.html directly from disk. Serve the folder instead — from the repository root, run: python3 -m http.server 8000 — then visit http://localhost:8000.'
+    : `You are on ${location.protocol}//${host}. Use http://localhost instead of the IP address, or put the site behind https. Deployed on GitHub Pages this is never an issue, because Pages is https.`;
+
+  const bar = el('div', {
+    id: 'insecure-banner', role: 'alert',
+    style: [
+      'position:fixed', 'inset:0 0 auto 0', 'z-index:400',
+      'background:#1a0d0b', 'border-bottom:2px solid var(--fault)',
+      'color:var(--steel)', 'padding:16px clamp(16px,3vw,28px)',
+      'font-family:var(--body)', 'font-size:13.5px', 'line-height:1.55',
+      'box-shadow:0 18px 60px rgba(0,0,0,.6)',
+    ].join(';'),
+  },
+    el('b', {
+      style: 'display:block;font-family:var(--mono);font-size:11px;letter-spacing:.16em;' +
+             'text-transform:uppercase;color:var(--fault);margin-bottom:6px',
+      text: 'Web Crypto unavailable — pours are disabled',
+    }),
+    el('span', { text: advice }),
+  );
+
+  document.body.prepend(bar);
+  document.body.style.paddingTop = `${bar.offsetHeight}px`;
+  return false;
+}
 
 /** Small async pool: keeps N requests in flight without flooding the API. */
 export async function pool(items, n, fn) {

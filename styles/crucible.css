@@ -41,7 +41,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 
 .pipeline {
   display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
-  gap: 0; border: 1px solid var(--rule); border-radius: 2px;
+  gap: 0; border: 1px solid var(--rule); border-radius: var(--r-md);
   background: var(--iron); overflow: hidden;
 }
 .pstage {
@@ -52,6 +52,8 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
   overflow: hidden; white-space: nowrap;
 }
 .pstage:last-child { border-right: 0; }
+.pstage:first-child { border-radius: var(--r-md) 0 0 var(--r-md); }
+.pstage:last-child { border-radius: 0 var(--r-md) var(--r-md) 0; }
 .pstage::before {
   content: ''; position: absolute; left: 9px; top: 50%; margin-top: -3px;
   width: 6px; height: 6px; background: var(--rule); transform: rotate(45deg);
@@ -83,7 +85,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 }
 
 .pool {
-  border: 1px solid var(--rule); border-radius: 2px; background: var(--iron);
+  border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--iron);
   display: flex; flex-direction: column; min-height: 0; overflow: hidden;
 }
 #crucible { width: 100%; aspect-ratio: 1 / .78; display: block; }
@@ -104,7 +106,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 /* --- terminal ---------------------------------------------------------- */
 
 .term {
-  border: 1px solid var(--rule); border-radius: 2px; background: #0c0e11;
+  border: 1px solid var(--rule); border-radius: var(--r-md); background: #0c0e11;
   display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0;
   position: relative; overflow: hidden;
 }
@@ -123,7 +125,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 .term__bar .sp { flex: 1; }
 .term__bar button {
   appearance: none; background: transparent; border: 1px solid var(--rule);
-  color: var(--scale); font: inherit; padding: 4px 10px; border-radius: 2px; cursor: pointer;
+  color: var(--scale); font: inherit; padding: 5px 13px; border-radius: var(--r-pill); cursor: pointer;
   transition: all .2s;
 }
 .term__bar button:hover { color: var(--bright); border-color: var(--pour); }
@@ -169,7 +171,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
   border: 1px solid rgba(47,217,189,.35); border-left: 2px solid var(--quench);
   background: linear-gradient(90deg, rgba(47,217,189,.07), transparent 70%);
-  padding: 14px 20px; border-radius: 2px; width: 100%;
+  padding: 14px 20px; border-radius: var(--r-md); width: 100%;
   animation: slot-in .5s var(--ease);
 }
 .ingot__t { font-family: var(--mono); font-size: 13px; color: var(--bright); }
@@ -179,7 +181,7 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 .faults {
   width: 100%; max-height: 190px; overflow: auto;
   border: 1px solid rgba(255,63,82,.3); border-left: 2px solid var(--fault);
-  background: rgba(255,63,82,.04); border-radius: 2px;
+  background: rgba(255,63,82,.04); border-radius: var(--r-md);
 }
 .fault {
   display: grid; grid-template-columns: auto 1fr; gap: 12px;
@@ -196,6 +198,8 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 #ledger {
   position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw);
   z-index: 120; background: var(--iron); border-left: 1px solid var(--rule);
+  border-radius: var(--r-lg) 0 0 var(--r-lg);
+  overflow: hidden;                 /* keep children inside the rounded corners */
   box-shadow: -30px 0 80px rgba(0,0,0,.6);
   transform: translateX(102%); transition: transform .4s var(--ease);
   display: flex; flex-direction: column;
@@ -210,11 +214,12 @@ body[data-mode='furnace'] #furnace { display: grid; animation: furnace-in .55s v
 
 .row {
   display: grid; grid-template-columns: 1fr auto; gap: 4px 14px;
-  padding: 14px 22px; border-bottom: 1px solid var(--ash);
-  cursor: pointer; transition: background .2s; text-align: left;
-  appearance: none; background: none; border-left: 0; border-right: 0; border-top: 0; width: 100%;
+  padding: 14px 18px; margin: 8px 12px; width: calc(100% - 24px);
+  border: 1px solid transparent; border-radius: var(--r-md);
+  cursor: pointer; transition: background .2s, border-color .2s; text-align: left;
+  appearance: none; background: none;
 }
-.row:hover { background: var(--panel); }
+.row:hover { background: var(--panel); border-color: var(--rule); }
 .row__id { font-family: var(--mono); font-size: 12.5px; color: var(--bright); }
 .row__meta { font-family: var(--mono); font-size: 11px; color: var(--scale); grid-column: 1; }
 .row__st { grid-row: 1 / span 2; align-self: center; }

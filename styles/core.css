@@ -32,8 +32,18 @@
   --body: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  --rail-w: 84px;
   --rig-h: 56px;
+
+  /* --- radius scale ---------------------------------------------------
+     A scale, not a blanket value. Controls are pills because they are
+     things you press; surfaces are softly rounded because they are things
+     you read; the tiny diamond markers stay sharp, because they are the
+     one bit of the foundry vernacular that should not be softened. */
+  --r-xs:   7px;    /* code chips, inline pips */
+  --r-sm:  10px;    /* inputs, log view, small panes */
+  --r-md:  14px;    /* cards, sheets, dialogs, terminals */
+  --r-lg:  20px;    /* station panels, drawers, large surfaces */
+  --r-pill: 999px;  /* every button, tag, filter and toggle */
   --ease: cubic-bezier(.22,.61,.36,1);
   --ease-in: cubic-bezier(.55,.06,.68,.19);
 }
@@ -72,7 +82,7 @@ a:hover { color: var(--whitehot); }
 :focus-visible {
   outline: 2px solid var(--pour);
   outline-offset: 3px;
-  border-radius: 2px;
+  border-radius: var(--r-sm);
 }
 
 ::selection { background: var(--oxide); color: var(--whitehot); }
@@ -100,7 +110,7 @@ a:hover { color: var(--whitehot); }
   position: fixed; top: 0; left: 0; right: 0; height: var(--rig-h);
   z-index: 60;
   display: flex; align-items: center; gap: 18px;
-  padding: 0 20px 0 calc(var(--rail-w) + 8px);
+  padding: 0 clamp(16px, 3vw, 28px);
   background: linear-gradient(180deg, rgba(10,11,13,.94), rgba(10,11,13,.55) 70%, transparent);
   backdrop-filter: blur(14px);
   border-bottom: 1px solid rgba(51,58,69,.5);
@@ -133,62 +143,12 @@ a:hover { color: var(--whitehot); }
   display: flex; align-items: center; gap: 9px;
   font-family: var(--mono); font-size: 12px; color: var(--steel);
 }
-.rig__who img { width: 24px; height: 24px; border-radius: 3px; border: 1px solid var(--rule); }
-
-/* --- rail (the descent) ------------------------------------------------ */
-
-.rail {
-  position: fixed; top: 0; bottom: 0; left: 0; width: var(--rail-w);
-  z-index: 55;
-  display: flex; flex-direction: column; align-items: center;
-  padding: calc(var(--rig-h) + 26px) 0 26px;
-  background: linear-gradient(90deg, rgba(16,19,23,.9), rgba(16,19,23,0));
-  border-right: 1px solid rgba(51,58,69,.35);
+.rig__who img {
+  width: 26px; height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--rule);
 }
-
-.rail__channel {
-  position: absolute; top: calc(var(--rig-h) + 34px); bottom: 34px; left: 50%;
-  width: 2px; margin-left: -1px;
-  background: var(--ash);
-  overflow: hidden;
-}
-.rail__molten {
-  position: absolute; inset: 0 0 auto 0; height: 0%;
-  background: linear-gradient(180deg, var(--oxide), var(--ember) 45%, var(--pour));
-  box-shadow: 0 0 14px rgba(255,95,31,.6);
-  transition: height .18s linear;
-}
-.rail__molten::after {
-  content: ''; position: absolute; left: -3px; right: -3px; bottom: -2px; height: 10px;
-  background: radial-gradient(ellipse at center, var(--whitehot), transparent 70%);
-}
-
-.rail__stops { position: relative; z-index: 2; display: flex; flex-direction: column;
-  justify-content: space-between; height: 100%; align-items: center; }
-
-.stop {
-  appearance: none; background: none; border: 0; cursor: pointer;
-  width: 44px; padding: 6px 0;
-  display: flex; flex-direction: column; align-items: center; gap: 5px;
-  color: var(--scale); font-family: var(--mono); font-size: 9.5px;
-  letter-spacing: .1em; text-transform: uppercase;
-  transition: color .3s var(--ease);
-}
-.stop::before {
-  content: ''; width: 9px; height: 9px;
-  background: var(--slag); border: 1.5px solid var(--rule);
-  transform: rotate(45deg);
-  transition: all .35s var(--ease);
-}
-.stop[data-state='active'] { color: var(--pour); }
-.stop[data-state='active']::before {
-  border-color: var(--pour); background: var(--pour);
-  box-shadow: 0 0 12px var(--pour); transform: rotate(45deg) scale(1.25);
-}
-.stop[data-state='done'] { color: var(--steel); }
-.stop[data-state='done']::before { border-color: var(--quench); background: var(--quench); }
-.stop[data-state='locked'] { opacity: .38; cursor: not-allowed; }
-.stop span { writing-mode: vertical-rl; }
 
 /* --- controls ---------------------------------------------------------- */
 
@@ -199,7 +159,7 @@ a:hover { color: var(--whitehot); }
   padding: 13px 26px;
   color: var(--slag);
   background: linear-gradient(135deg, var(--pour), var(--ember));
-  border: 0; border-radius: 2px;
+  border: 0; border-radius: var(--r-pill);
   position: relative; overflow: hidden;
   transition: transform .18s var(--ease), box-shadow .25s var(--ease), filter .2s;
   box-shadow: 0 0 0 rgba(255,95,31,0), 0 6px 22px rgba(0,0,0,.5);
@@ -214,7 +174,7 @@ a:hover { color: var(--whitehot); }
 
 .btn--ghost {
   background: transparent; color: var(--steel);
-  border: 1px solid var(--rule); box-shadow: none;
+  border: 1px solid var(--rule); border-radius: var(--r-pill); box-shadow: none;
 }
 .btn--ghost:hover:not(:disabled) {
   color: var(--bright); border-color: var(--pour); box-shadow: none; filter: none;
@@ -228,7 +188,7 @@ a:hover { color: var(--whitehot); }
   width: 100%;
   background: var(--iron);
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  border-radius: var(--r-sm);
   color: var(--bright);
   font-family: var(--mono); font-size: 13px;
   padding: 12px 14px;
@@ -255,7 +215,7 @@ a:hover { color: var(--whitehot); }
   display: inline-flex; align-items: center; gap: 6px;
   font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
   text-transform: uppercase; padding: 3px 8px;
-  border: 1px solid var(--rule); border-radius: 2px; color: var(--scale);
+  border: 1px solid var(--rule); border-radius: var(--r-pill); color: var(--scale);
 }
 .tag[data-tone='hot'] { color: var(--pour); border-color: rgba(255,163,23,.4); }
 .tag[data-tone='cold'] { color: var(--scale); }
@@ -272,7 +232,7 @@ a:hover { color: var(--whitehot); }
 .toast {
   background: var(--panel); border: 1px solid var(--rule);
   border-left: 3px solid var(--pour);
-  padding: 13px 16px; border-radius: 2px;
+  padding: 13px 16px; border-radius: var(--r-md);
   font-size: 13.5px; color: var(--steel);
   box-shadow: 0 12px 40px rgba(0,0,0,.6);
   animation: toast-in .3s var(--ease);
@@ -282,6 +242,74 @@ a:hover { color: var(--whitehot); }
 .toast b { display: block; color: var(--bright); font-family: var(--mono);
   font-size: 11px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 4px; }
 @keyframes toast-in { from { opacity: 0; transform: translateX(20px); } }
+
+/* --- the spine ---------------------------------------------------------- */
+/* Fixed, full-viewport, and stacked BELOW #descent on purpose: that is what
+   makes the channel disappear behind a station panel and re-emerge past it. */
+
+#spine {
+  position: fixed; inset: 0; z-index: 5;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.spine__channel {
+  fill: none; stroke: var(--ash); stroke-width: 2;
+  stroke-linecap: round;
+}
+.spine__molten {
+  fill: none; stroke-width: 3;
+  stroke-linecap: round;
+  filter: drop-shadow(0 0 9px rgba(255, 95, 31, .45));
+}
+.spine__crest {
+  fill: none; stroke: var(--whitehot); stroke-width: 1.6;
+  stroke-linecap: round; opacity: .55;
+  filter: drop-shadow(0 0 12px rgba(255, 214, 150, .7));
+}
+
+.spine__halo { fill: var(--ember); opacity: .5; }
+.spine__core { fill: var(--whitehot); }
+.spine__head { transition: opacity .3s var(--ease); }
+
+/* Navigation lives on the line itself: tapping points off the channel. */
+.spine__nodes { pointer-events: none; }
+.spine__node { pointer-events: auto; cursor: pointer; }
+.spine__node .node__ring {
+  fill: var(--slag); stroke: var(--rule); stroke-width: 1.5;
+  transition: stroke .3s var(--ease), fill .3s var(--ease);
+}
+.spine__node .node__pip {
+  fill: var(--rule);
+  transition: fill .3s var(--ease), r .3s var(--ease);
+}
+.spine__node .node__label {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .18em;
+  text-transform: uppercase; fill: var(--scale);
+  transition: fill .3s var(--ease), opacity .3s var(--ease);
+  opacity: 0;
+}
+.spine__node:hover .node__label,
+.spine__node:focus-visible .node__label,
+.spine__node[data-state='active'] .node__label { opacity: 1; }
+
+.spine__node[data-state='ready'] .node__ring { stroke: #495260; }
+.spine__node[data-state='done'] .node__ring { stroke: var(--quench); }
+.spine__node[data-state='done'] .node__pip { fill: var(--quench); }
+.spine__node[data-state='done'] .node__label { fill: var(--steel); }
+.spine__node[data-state='active'] .node__ring {
+  stroke: var(--pour); fill: #1a1408;
+  filter: drop-shadow(0 0 10px rgba(255, 163, 23, .7));
+}
+.spine__node[data-state='active'] .node__pip { fill: var(--pour); r: 5; }
+.spine__node[data-state='active'] .node__label { fill: var(--pour); }
+.spine__node[data-state='locked'] { opacity: .4; cursor: not-allowed; }
+.spine__node:focus-visible .node__ring { stroke: var(--pour); }
+.spine__node:focus { outline: none; }
+
+body[data-mode='furnace'] #spine,
+body[data-mode='manual'] #spine,
+body[data-mode='terms'] #spine { opacity: 0; transition: opacity .3s var(--ease); }
 
 /* --- utility ----------------------------------------------------------- */
 
@@ -298,12 +326,6 @@ a:hover { color: var(--whitehot); }
   vertical-align: -2px;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-
-@media (max-width: 860px) {
-  :root { --rail-w: 0px; }
-  .rail { display: none; }
-  .rig { padding-left: 16px; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

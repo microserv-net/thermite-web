@@ -5,25 +5,47 @@
  * a stack of cards.
  */
 
+/* The content sits ABOVE the spine (z-index 5) so the channel runs behind each
+   panel. Horizontal placement is derived from the curve: --card-x is written by
+   the spine engine per station, so a card always sits where the line is at that
+   depth rather than in a fixed column. */
+
 #descent {
   position: relative; z-index: 10;
-  padding-left: var(--rail-w);
 }
 
 .station {
   position: relative;
   min-height: 100dvh;
-  display: flex; align-items: center;
-  padding: calc(var(--rig-h) + 60px) 6vw 80px;
+  display: flex; flex-direction: column; justify-content: center;
+  padding: calc(var(--rig-h) + 60px) 0 80px;
 }
 
 .station__inner {
-  width: 100%; max-width: 980px; margin: 0 auto;
+  width: min(640px, calc(100vw - 48px));
+  margin-left: var(--card-x, 30px);
+  padding: clamp(22px, 2.6vw, 40px);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+  background: linear-gradient(180deg, rgba(18, 21, 26, .93), rgba(13, 15, 19, .88));
+  box-shadow: 0 34px 90px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .03);
+  backdrop-filter: blur(7px);
   opacity: 0;
   transform: translateY(38px);
-  transition: opacity .7s var(--ease), transform .7s var(--ease), filter .7s var(--ease);
+  transition: opacity .7s var(--ease), transform .7s var(--ease),
+              filter .7s var(--ease), margin-left .5s var(--ease),
+              border-color .5s var(--ease);
   filter: blur(6px);
 }
+
+/* The edge the channel enters gets the heat, so it reads as a tap off the
+   line rather than a card that happens to overlap it. */
+.station[data-side='right'] .station__inner { border-left: 2px solid var(--oxide); }
+.station[data-side='left'] .station__inner { border-right: 2px solid var(--oxide); }
+.station[data-visible='true'][data-side='right'] .station__inner { border-left-color: var(--ember); }
+.station[data-visible='true'][data-side='left'] .station__inner { border-right-color: var(--ember); }
+.station[data-locked='true'][data-side='right'] .station__inner { border-left-color: var(--rule); }
+.station[data-locked='true'][data-side='left'] .station__inner { border-right-color: var(--rule); }
 .station[data-visible='true'] .station__inner { opacity: 1; transform: none; filter: none; }
 .station[data-visible='past'] .station__inner { opacity: .28; transform: translateY(-18px); filter: blur(2px); }
 
@@ -33,20 +55,31 @@
 .station__lock {
   display: none;
   font-family: var(--mono); font-size: 12px; color: var(--scale);
-  border: 1px dashed var(--rule); padding: 12px 16px; border-radius: 2px;
+  border: 1px dashed var(--rule); padding: 12px 16px; border-radius: var(--r-md);
   margin-top: 22px; max-width: 60ch;
 }
 .station[data-locked='true'] .station__lock { display: block; }
 
 .station__num {
-  position: absolute; left: 2.2vw; top: calc(var(--rig-h) + 60px);
-  font-family: var(--mono); font-size: 11px; color: var(--rule);
-  letter-spacing: .2em;
+  margin: 0 0 12px var(--card-x, 30px);
+  font-family: var(--mono); font-size: 10.5px; color: var(--rule);
+  letter-spacing: .22em; text-transform: uppercase;
+  opacity: 0; transform: translateY(10px);
+  transition: opacity .6s var(--ease) .1s, transform .6s var(--ease) .1s,
+              margin-left .5s var(--ease);
 }
+.station[data-visible='true'] .station__num { opacity: 1; transform: none; }
+.station[data-visible='past'] .station__num { opacity: .25; }
 
 /* --- hero -------------------------------------------------------------- */
 
 #s-intro { min-height: 100dvh; }
+#s-intro .station__inner {
+  width: min(900px, calc(100vw - 48px));
+  padding: 0; border: 0; background: none;
+  box-shadow: none; backdrop-filter: none;
+}
+#s-intro .station__num { display: none; }
 
 .reaction {
   font-family: var(--display);
@@ -87,14 +120,22 @@
   text-transform: uppercase; color: var(--scale); margin: 2px 0 30px;
 }
 
+/* Drawn as SVG with an explicit textLength, so the wordmark scales to its
+   container instead of being sized in viewport units and guessed at. It fits
+   exactly, at every width, whether or not the display face has loaded — which
+   is what the old clamp() could not promise, and why it used to lose its last
+   letters. */
 .hero__name {
-  font-family: var(--display); font-weight: 900; font-stretch: 125%;
-  font-size: clamp(60px, 15vw, 200px); line-height: .82;
-  letter-spacing: -.05em; color: var(--bright);
+  display: block;
+  width: 100%;
+  height: auto;
   margin: 26px 0 18px;
-  background: linear-gradient(178deg, var(--bright) 8%, var(--pour) 62%, var(--oxide) 100%);
-  -webkit-background-clip: text; background-clip: text;
-  -webkit-text-fill-color: transparent;
+  overflow: visible;
+}
+.hero__name text {
+  font-family: var(--display);
+  font-weight: 900;
+  font-stretch: 125%;
 }
 
 .hero__lede { font-size: clamp(15px, 1.6vw, 19px); max-width: 56ch; color: var(--steel); }
@@ -131,13 +172,14 @@
 
 .choice {
   appearance: none; text-align: left; cursor: pointer;
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 2px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r-md);
   padding: 15px 16px; color: var(--steel);
   position: relative; overflow: hidden;
   transition: border-color .25s var(--ease), transform .25s var(--ease), background .25s;
 }
 .choice::before {
-  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+  border-radius: var(--r-pill);
   background: var(--ember); transform: scaleY(0); transform-origin: top;
   transition: transform .3s var(--ease);
 }
@@ -157,7 +199,7 @@
 .choice__note { font-size: 12.5px; color: var(--scale); margin-top: 6px; line-height: 1.45; }
 .choice__flag {
   font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--scale); border: 1px solid var(--rule); padding: 1px 5px; border-radius: 2px;
+  color: var(--scale); border: 1px solid var(--rule); padding: 2px 8px; border-radius: var(--r-pill);
 }
 .choice__flag[data-kind='native'] { color: var(--quench); border-color: rgba(47,217,189,.35); }
 .choice__flag[data-kind='cross'] { color: var(--pour); border-color: rgba(255,163,23,.3); }
@@ -165,7 +207,7 @@
 .filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
 .filter {
   appearance: none; cursor: pointer; background: transparent;
-  border: 1px solid var(--rule); color: var(--scale); border-radius: 2px;
+  border: 1px solid var(--rule); color: var(--scale); border-radius: var(--r-pill);
   font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
   padding: 6px 12px; transition: all .2s;
 }
@@ -176,7 +218,7 @@
 .readout {
   margin-top: 24px; border: 1px solid var(--rule); border-left: 2px solid var(--pour);
   background: linear-gradient(90deg, rgba(255,163,23,.05), transparent 60%);
-  padding: 16px 20px; border-radius: 2px;
+  padding: 16px 20px; border-radius: var(--r-md);
 }
 .readout__t { font-family: var(--mono); font-size: 13px; color: var(--bright); }
 .readout__d { font-size: 13.5px; color: var(--scale); margin-top: 7px; max-width: 66ch; }
@@ -185,7 +227,7 @@
 /* --- upload ------------------------------------------------------------ */
 
 .drop {
-  margin-top: 26px; border: 1px dashed var(--rule); border-radius: 3px;
+  margin-top: 26px; border: 1px dashed var(--rule); border-radius: var(--r-lg);
   background: linear-gradient(180deg, rgba(22,26,32,.7), rgba(16,19,23,.4));
   padding: 46px 30px; text-align: center;
   transition: border-color .25s, background .25s, transform .25s var(--ease);
@@ -204,7 +246,7 @@
 }
 .drop__hint { font-family: var(--mono); font-size: 11.5px; color: var(--scale); letter-spacing: .06em; }
 
-.modeswap { display: flex; gap: 0; margin-top: 22px; border: 1px solid var(--rule); width: fit-content; border-radius: 2px; overflow: hidden; }
+.modeswap { display: flex; gap: 0; margin-top: 22px; border: 1px solid var(--rule); width: fit-content; border-radius: var(--r-pill); overflow: hidden; }
 .modeswap button {
   appearance: none; cursor: pointer; background: transparent; border: 0;
   color: var(--scale); font-family: var(--mono); font-size: 11.5px;
@@ -214,7 +256,7 @@
 .modeswap button[aria-pressed='true'] { background: var(--raised); color: var(--pour); }
 
 .filecard {
-  margin-top: 22px; border: 1px solid var(--rule); border-radius: 2px;
+  margin-top: 22px; border: 1px solid var(--rule); border-radius: var(--r-md);
   background: var(--panel); padding: 18px 20px;
   animation: slot-in .45s var(--ease);
 }
@@ -233,6 +275,7 @@
 .problem {
   margin-top: 18px; border-left: 2px solid var(--fault);
   background: rgba(255,63,82,.06); padding: 13px 16px;
+  border-radius: 0 var(--r-md) var(--r-md) 0;
   font-size: 13.5px; color: #ffb3bb;
 }
 .problem b { color: var(--fault); font-family: var(--mono); font-size: 11px;
@@ -248,7 +291,7 @@
 }
 .perms code {
   font-family: var(--mono); font-size: 12px; color: var(--bright);
-  background: var(--iron); padding: 2px 7px; border-radius: 2px; border: 1px solid var(--ash);
+  background: var(--iron); padding: 2px 8px; border-radius: var(--r-xs); border: 1px solid var(--ash);
 }
 
 .keyrow { display: flex; gap: 10px; margin-top: 24px; flex-wrap: wrap; align-items: stretch; }
@@ -257,17 +300,22 @@
 .identity {
   display: flex; align-items: center; gap: 16px; margin-top: 26px;
   border: 1px solid var(--rule); border-left: 2px solid var(--quench);
-  padding: 16px 20px; border-radius: 2px; background: var(--panel);
+  padding: 16px 20px; border-radius: var(--r-md); background: var(--panel);
   animation: slot-in .5s var(--ease);
 }
-.identity img { width: 46px; height: 46px; border-radius: 3px; border: 1px solid var(--rule); }
+.identity img {
+  width: 48px; height: 48px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--rule);
+}
 .identity__n { font-family: var(--mono); font-size: 15px; color: var(--bright); }
 .identity__s { font-size: 12.5px; color: var(--scale); }
 
 /* --- confirm ----------------------------------------------------------- */
 
 .sheet {
-  margin-top: 26px; border: 1px solid var(--rule); border-radius: 2px;
+  margin-top: 26px; border: 1px solid var(--rule); border-radius: var(--r-md);
   background: var(--panel); overflow: hidden;
 }
 .sheet dl { margin: 0; display: grid; grid-template-columns: 190px 1fr; }
@@ -289,9 +337,13 @@
 .ignite .btn { font-size: 14px; padding: 17px 40px; letter-spacing: .18em; }
 .ignite__note { font-size: 12.5px; color: var(--scale); max-width: 42ch; }
 
+@media (max-width: 900px) {
+  .station__inner { width: calc(100vw - 40px); }
+  #s-intro .station__inner { width: calc(100vw - 40px); }
+}
+
 @media (max-width: 720px) {
-  .station { padding: calc(var(--rig-h) + 40px) 20px 60px; min-height: auto; }
-  .station__num { display: none; }
+  .station { padding: calc(var(--rig-h) + 40px) 0 60px; min-height: auto; }
   .sheet dl { grid-template-columns: 1fr; }
   .sheet dt { border-bottom: 0; padding-bottom: 0; background: none; }
   .perms li { grid-template-columns: 1fr; gap: 4px; }
