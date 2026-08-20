@@ -1,9 +1,13 @@
-# Deploy the Thermite site to GitHub Pages.
+# Deploy the Thermite site to GitHub Pages, from the repository root.
 #
-# This lives in the WEBSITE repository (thermite-web), which is a different
-# repository from anyone's build crucible. It has no path filter on jobs/**,
-# no build workflow, and no way to start a compilation. Pushing the site can
-# never pour anything — that separation is structural, not conventional.
+# This lives in the WEBSITE repository, which is a different repository from
+# anyone's build crucible. It has no path filter on jobs/**, no build workflow,
+# and no way to start a compilation. Pushing the site can never pour anything —
+# that separation is structural, not conventional.
+#
+# Note: build-repo-template/.github/ is NOT this repository's .github/, so the
+# templated build and cleanup workflows sitting in it are inert here. They only
+# become live once they are committed into a user's crucible.
 name: Deploy site
 
 on:
@@ -28,9 +32,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Keep the deployed site to just the site
+        # The repository root is the Pages root, so trim the parts that are
+        # source material rather than the published site.
+        run: |
+          mkdir -p _site
+          cp -r index.html 404.html .nojekyll js styles _site/ 2>/dev/null || true
+          ls -la _site
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: _site
       - id: deploy
         uses: actions/deploy-pages@v4
