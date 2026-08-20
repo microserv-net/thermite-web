@@ -1,49 +1,65 @@
 // THERMITE — the spine.
 //
-// The pour line is the page's spine, not a gutter ornament. It runs top to
-// bottom through the middle of the content, wandering left and right, and the
-// stations ride ON it — each card centred on wherever the line happens to be at
-// that depth. Scrolling reads as travelling along the thread while the steps
-// come to meet you.
+// The pour line runs top to bottom through the middle of the content, wandering
+// left and right, and the stations ride ON it — each card centred on wherever
+// the thread happens to be at that depth. Scrolling reads as travelling along
+// the thread while the steps come to meet you.
 //
-// How it works:
+//   * The thread is STRUCK below the hero's buttons, not at the top of the
+//     page. The hero is the strike; everything below it is the pour.
 //
-//   * One path, drawn in DOCUMENT coordinates, inside a fixed full-viewport
-//     SVG whose <g> is translated by -scrollY. So it is a single unbroken
-//     object that scrolls with the page, not a per-section decoration.
+//   * The curve is sampled coarsely (every ~80px) and joined with a
+//     Catmull-Rom spline. The earlier version sampled every 14px and joined
+//     with vertical-handle cubics, which put a tiny S-bend at every sample and
+//     read as a wobble. Few points plus a real spline is smoother than many
+//     points plus an approximation.
 //
-//   * The curve is three sine harmonics summed, not one. A single sine is a
-//     metronome — you can see the next bend coming. Three incommensurate
-//     wavelengths give irregular, organic curvature that never repeats over
-//     the height of a page, while staying completely deterministic: it looks
-//     the same on every reload.
+//   * Three sine harmonics at incommensurate wavelengths, fixed phases:
+//     irregular to the eye, identical on every reload.
 //
-//   * Two fainter strands run alongside at a small phase offset, so the line
-//     braids and separates as it descends rather than reading as a single wire.
+//   * TWO svg layers straddle the content. The solid thread sits BELOW the
+//     cards (z 5) so it disappears behind a panel and re-emerges; a ghost copy
+//     sits ABOVE (z 11) at low opacity, so the thread stays faintly visible
+//     passing through. That pairing is what sells the depth.
 //
-//   * TWO svg layers straddle the content in z-order. The solid spine sits
-//     BELOW the cards (z 5) so it disappears behind a panel and re-emerges;
-//     a ghost copy sits ABOVE (z 11) at low opacity and screen blend, so the
-//     thread is faintly visible passing *through* the card. That pairing is
-//     what sells the depth — without the ghost, the line just vanishes.
-//
-//   * Reveal is scroll-linked via stroke-dashoffset and the molten head rides
-//     the real geometry via getPointAtLength(). Nothing runs on a timer.
+//   * Reveal is scroll-linked. The drawn length for a given y is found by
+//     binary search on the real path rather than from a sample table, so it
+//     stays exact however coarsely the curve is sampled.
 
 import { $, reducedMotion } from '../util.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const TAU = Math.PI * 2;
-const SAMPLE = 14;          // px of vertical travel per sample point
+const SAMPLE = 80;          // px of vertical travel between spline knots
 const HEAD_AT = 0.58;       // where down the viewport the pour head sits
-const ORIGIN_GAP = 64;      // clearance below the hero's buttons
 const BRAID = 0.34;         // phase offset of the outer strands
+const ORIGIN_GAP = 56;      // clearance below the hero's buttons
+const TAIL_GAP = 52;        // how far the thread runs past the last card
 
 const svgEl = (name, attrs = {}) => {
   const n = document.createElementNS(NS, name);
   for (const [k, v] of Object.entries(attrs)) if (v != null) n.setAttribute(k, v);
   return n;
 };
+
+/** Catmull-Rom through the points, emitted as cubic Béziers. */
+function spline(pts) {
+  if (pts.length < 2) return '';
+  let d = `M ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6;
+    const c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6;
+    const c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    d += ` C ${c1x.toFixed(2)} ${c1y.toFixed(2)}, ${c2x.toFixed(2)} ${c2y.toFixed(2)},` +
+         ` ${p2[0].toFixed(2)} ${p2[1].toFixed(2)}`;
+  }
+  return d;
+}
 
 export class Spine {
   /**
@@ -55,6 +71,7 @@ export class Spine {
     this.onNode = onNode || (() => {});
     this.reduced = reducedMotion();
     this.nodes = new Map();
+    this.startY = 0;
 
     this._build();
 
@@ -62,11 +79,11 @@ export class Spine {
     this._onResize = () => { this.measure(); this._requestPaint(); };
     addEventListener('scroll', this._onScroll, { passive: true });
     addEventListener('resize', this._onResize, { passive: true });
+
+    // Font loading changes the height of every card and the width of the
+    // wordmark, so the geometry has to be re-derived once it settles.
     if (document.fonts?.ready) document.fonts.ready.then(() => this._onResize());
 
-    // Cards change height as stations unlock and content appears, which moves
-    // every station below them. The geometry has to be re-derived, not
-    // measured once at load.
     this._ro = new ResizeObserver(() => this._settle());
     for (const s of stations) this._ro.observe(s);
 
@@ -77,7 +94,6 @@ export class Spine {
   // ------------------------------------------------------------- build -----
 
   _build() {
-    // --- layer below the content -----------------------------------------
     const under = svgEl('svg', { id: 'spine', 'aria-hidden': 'true', xmlns: NS, preserveAspectRatio: 'none' });
 
     const defs = svgEl('defs');
@@ -109,8 +125,6 @@ export class Spine {
       this.crest, this.nodeLayer, this.headGroup);
     under.append(defs, this.gUnder);
 
-    // --- layer above the content -----------------------------------------
-    // The same thread, ghosted, so it can be seen running under the panels.
     const over = svgEl('svg', { id: 'spine-ghost', 'aria-hidden': 'true', xmlns: NS, preserveAspectRatio: 'none' });
     this.gOver = svgEl('g');
     this.ghost = svgEl('path', { class: 'spine__ghost' });
@@ -163,16 +177,36 @@ export class Spine {
   // ----------------------------------------------------------- geometry ----
 
   /**
-   * Where the thread is struck: just under the hero's buttons, not at the top
-   * of the page. The hero is the strike, everything below it is the pour.
+   * Where the thread is struck: just under the hero's buttons. The hero is the
+   * strike, everything below it is the pour — so nothing is drawn above this.
    */
   originY() {
     const intro = this.stations.find((s) => s.dataset.key === 'intro');
     if (!intro) return 0;
-    const anchor = intro.querySelector('.hero__cta') || intro.querySelector('.station__inner');
-    if (!anchor) return intro.offsetTop + intro.offsetHeight;
-    const r = anchor.getBoundingClientRect();
-    return Math.round(r.bottom + window.scrollY + ORIGIN_GAP);
+
+    const cta = intro.querySelector('.hero__cta');
+    if (cta) {
+      const r = cta.getBoundingClientRect();
+      if (r.height > 0) return Math.round(r.bottom + window.scrollY + ORIGIN_GAP);
+    }
+    // Fallback if the hero has no button row: the bottom of the station, minus
+    // its own bottom padding.
+    return Math.round(intro.offsetTop + intro.offsetHeight * 0.86);
+  }
+
+  /**
+   * Where the thread runs out: just past the last station's card. Beyond that
+   * there is nothing to thread through, and a line trailing into the footer
+   * reads as an unfinished pour.
+   */
+  endY() {
+    for (let i = this.stations.length - 1; i >= 0; i--) {
+      const card = this.stations[i].querySelector('.station__inner');
+      if (!card) continue;
+      const r = card.getBoundingClientRect();
+      if (r.height > 0) return Math.round(r.bottom + window.scrollY + TAIL_GAP);
+    }
+    return this.docH;
   }
 
   /**
@@ -181,11 +215,11 @@ export class Spine {
    */
   xAt(y, shift = 0) {
     const w = this.wave;
-    y = Math.max(y, this.startY || 0);
+    const t = Math.min(Math.max(y, this.startY), this.stopY ?? Infinity);
     return w.cx
-      + w.a1 * Math.sin((y / w.l1) * TAU + w.p1 + shift)
-      + w.a2 * Math.sin((y / w.l2) * TAU + w.p2 + shift * 1.6)
-      + w.a3 * Math.sin((y / w.l3) * TAU + w.p3 - shift * 0.8);
+      + w.a1 * Math.sin((t / w.l1) * TAU + w.p1 + shift)
+      + w.a2 * Math.sin((t / w.l2) * TAU + w.p2 + shift * 1.6)
+      + w.a3 * Math.sin((t / w.l3) * TAU + w.p3 - shift * 0.8);
   }
 
   measure() {
@@ -196,13 +230,12 @@ export class Spine {
     this.vw = vw; this.vh = vh; this.docH = docH;
     this.narrow = vw < 820;
 
-    // The card has to fit inside the swing of the curve without being clamped
-    // against the edges, so its width is derived from the viewport rather than
-    // fixed — and written back to CSS so the two never disagree.
     this.cardW = this.narrow
       ? vw - 32
       : Math.round(Math.min(600, Math.max(340, vw * 0.44), vw - 96));
     document.documentElement.style.setProperty('--card-w', `${this.cardW}px`);
+
+    this._fitWordmark();
 
     const amp = this.narrow
       ? Math.min(vw * 0.16, 60)
@@ -210,7 +243,6 @@ export class Spine {
 
     this.wave = {
       cx: vw / 2,
-      // Incommensurate wavelengths: the sum never repeats over a page height.
       a1: amp * 0.58, l1: vh * 1.90, p1: -0.55,
       a2: amp * 0.27, l2: vh * 0.83, p2: 2.20,
       a3: amp * 0.15, l3: vh * 3.40, p3: 4.10,
@@ -222,49 +254,25 @@ export class Spine {
       svg.setAttribute('height', vh);
     }
 
-    // --- sample the curve, keeping a cumulative length table so the reveal is
-    //     driven from a y position instead of being guessed at.
-    // Everything from here down is measured from the strike point, so the
-    // reveal maths and the geometry share one origin.
-    this.startY = Math.min(this.originY(), docH - 1);
+    this.startY = Math.max(0, Math.min(this.originY(), docH - 1));
+    this.stopY = null;                       // xAt must not clamp while measuring
+    this.stopY = Math.max(this.startY + SAMPLE, Math.min(this.endY(), docH));
 
     const build = (shift) => {
       const pts = [];
-      for (let y = this.startY; y <= docH; y += SAMPLE) pts.push([this.xAt(y, shift), y]);
-      if (pts[pts.length - 1][1] < docH) pts.push([this.xAt(docH, shift), docH]);
-
-      let d = `M ${pts[0][0].toFixed(2)} ${pts[0][1].toFixed(2)}`;
-      const lens = [0];
-      let total = 0;
-      for (let i = 1; i < pts.length; i++) {
-        const [x0, y0] = pts[i - 1];
-        const [x1, y1] = pts[i];
-        // The curve is a function of y, so the tangent at every sample point is
-        // closer to vertical than horizontal — control handles go on the
-        // midpoint's y, which keeps the joins invisible.
-        const my = (y0 + y1) / 2;
-        d += ` C ${x0.toFixed(2)} ${my.toFixed(2)}, ${x1.toFixed(2)} ${my.toFixed(2)}, ${x1.toFixed(2)} ${y1.toFixed(2)}`;
-        total += Math.hypot(x1 - x0, y1 - y0);
-        lens.push(total);
-      }
-      return { d, lens, total };
+      for (let y = this.startY; y <= this.stopY; y += SAMPLE) pts.push([this.xAt(y, shift), y]);
+      const lastY = pts.length ? pts[pts.length - 1][1] : this.startY;
+      if (lastY < this.stopY) pts.push([this.xAt(this.stopY, shift), this.stopY]);
+      return spline(pts);
     };
 
-    const main = build(0);
-    const a = build(BRAID);
-    const b = build(-BRAID);
-
-    this.lens = main.lens;
-
     for (const p of [this.channel, this.molten, this.crest, this.ghost, this.ghostHot]) {
-      p.setAttribute('d', main.d);
+      p.setAttribute('d', build(0));
     }
-    this.strandA.setAttribute('d', a.d);
-    this.strandB.setAttribute('d', b.d);
+    this.strandA.setAttribute('d', build(BRAID));
+    this.strandB.setAttribute('d', build(-BRAID));
 
-    this.total = this.molten.getTotalLength?.() || main.total;
-    this.scale = this.total / (main.total || 1);
-
+    this.total = this.molten.getTotalLength ? this.molten.getTotalLength() : docH;
     for (const p of [this.molten, this.crest, this.ghostHot]) {
       p.style.strokeDasharray = `${this.total}`;
     }
@@ -273,10 +281,45 @@ export class Spine {
     this._placeNodes();
   }
 
+  /**
+   * The path is monotonic in y, so a binary search on the real geometry gives
+   * the drawn length exactly — no sample table to keep in step with the curve.
+   */
   lengthAtY(y) {
-    if (y <= this.startY) return 0;
-    const i = Math.min(this.lens.length - 1, Math.max(0, Math.round((y - this.startY) / SAMPLE)));
-    return this.lens[i] * this.scale;
+    if (!this.molten.getPointAtLength || y <= this.startY) return 0;
+    if (y >= this.stopY) return this.total;
+    let lo = 0, hi = this.total;
+    for (let i = 0; i < 18; i++) {
+      const mid = (lo + hi) / 2;
+      if (this.molten.getPointAtLength(mid).y < y) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
+  // ------------------------------------------------------- the wordmark ----
+
+  /**
+   * THERMITE has to fit its container at every width, whatever face is
+   * actually loaded. CSS alone cannot promise that: sizing it in viewport units
+   * guesses at font metrics, and SVG textLength is honoured inconsistently —
+   * Safari ignores lengthAdjust here, which is why the word used to render
+   * wider than the page and lose its first and last letters.
+   *
+   * Measuring is the only thing that always works.
+   */
+  _fitWordmark() {
+    const name = document.querySelector('.hero__name');
+    if (!name || !name.parentElement) return;
+
+    name.style.fontSize = '';                       // back to the CSS value
+    const avail = name.parentElement.clientWidth;
+    const natural = name.scrollWidth;
+    if (!avail || !natural) return;
+
+    if (natural > avail) {
+      const base = parseFloat(getComputedStyle(name).fontSize) || 100;
+      name.style.fontSize = `${Math.max(26, Math.floor(base * (avail / natural) * 0.99))}px`;
+    }
   }
 
   // ---------------------------------------------------- station placement --
@@ -288,7 +331,7 @@ export class Spine {
       if (!card) continue;
 
       // The hero is not a bead on the thread — it is where the thread starts.
-      // CSS centres it in the viewport, so JS keeps its hands off.
+      // CSS centres it; the engine keeps its hands off.
       if (station.dataset.key === 'intro') {
         station.style.removeProperty('--card-x');
         station.style.setProperty('--drift', '0');
@@ -296,9 +339,9 @@ export class Spine {
       }
 
       const rect = card.getBoundingClientRect();
-      // Measure the card rather than assuming --card-w. Stations that override
-      // their own width (the hero does) would otherwise be positioned as if
-      // they were the default size and hang off the right-hand edge.
+      // Measure the card rather than assuming --card-w: a station that
+      // overrides its own width would otherwise be positioned as though it
+      // were the default size, and hang off the right-hand edge.
       const cardW = rect.width || this.cardW;
       const cardMidY = rect.top + window.scrollY + rect.height / 2;
       const x = this.xAt(cardMidY);
@@ -306,8 +349,6 @@ export class Spine {
       const left = Math.max(gutter, Math.min(x - cardW / 2, this.vw - cardW - gutter));
 
       station.style.setProperty('--card-x', `${Math.round(left)}px`);
-      // How far the thread is from the card's centre, so the panel can lean
-      // very slightly into the curve.
       const drift = (x - (left + cardW / 2)) / (cardW / 2);
       station.style.setProperty('--drift', drift.toFixed(3));
     }
@@ -317,16 +358,16 @@ export class Spine {
     for (const [key, group] of this.nodes) {
       const station = this.stations.find((s) => s.dataset.key === key);
       if (!station) { group.style.display = 'none'; continue; }
+
       let y;
       if (key === 'intro') {
-        // The ignition node sits exactly where the thread is struck.
-        y = this.startY;
+        y = this.startY;                       // the strike point itself
       } else {
         const card = station.querySelector('.station__inner');
         const rect = card ? card.getBoundingClientRect() : station.getBoundingClientRect();
-        // Just above the card, on the exposed run of thread between stations.
         y = Math.max(this.startY, rect.top + window.scrollY - 34);
       }
+
       const x = this.xAt(y);
       group.setAttribute('transform', `translate(${x.toFixed(1)} ${y.toFixed(1)})`);
       const flip = x > this.vw * 0.6;
@@ -361,8 +402,6 @@ export class Spine {
     this.molten.style.strokeDashoffset = `${this.total - drawn}`;
     this.ghostHot.style.strokeDashoffset = `${this.total - drawn}`;
 
-    // A brighter crest just behind the head: the metal still moving, as
-    // distinct from the channel it has already filled.
     const crest = Math.min(drawn, this.vh * 0.5);
     this.crest.style.strokeDasharray = `${crest} ${this.total}`;
     this.crest.style.strokeDashoffset = `${this.total - drawn}`;
@@ -370,8 +409,8 @@ export class Spine {
     if (drawn > 2 && this.molten.getPointAtLength) {
       const p = this.molten.getPointAtLength(Math.min(drawn, this.total - 0.5));
       this.headGroup.setAttribute('transform', `translate(${p.x.toFixed(1)} ${p.y.toFixed(1)})`);
-      this.headGroup.style.opacity =
-        (headY >= this.docH - 4 || headY <= this.startY + 2) ? '0' : '1';
+      // The head disappears once the pour has reached the last station.
+      this.headGroup.style.opacity = headY >= this.stopY - 4 ? '0' : '1';
     } else {
       this.headGroup.style.opacity = '0';
     }

@@ -64,18 +64,10 @@
       </h1>
       <p class="hero__caption">The reaction that consumes rust and pours molten iron</p>
 
-      <svg class="hero__name" viewBox="0 0 1000 215" role="img" aria-label="Thermite"
-           preserveAspectRatio="xMidYMid meet">
-        <defs>
-          <linearGradient id="wordmark" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="6%"   stop-color="#e9eef5"/>
-            <stop offset="58%"  stop-color="#ffa317"/>
-            <stop offset="100%" stop-color="#b8390d"/>
-          </linearGradient>
-        </defs>
-        <text x="500" y="172" font-size="200" textLength="1000" text-anchor="middle"
-              lengthAdjust="spacingAndGlyphs" fill="url(#wordmark)">THERMITE</text>
-      </svg>
+      <!-- Plain text on purpose. SVG textLength is honoured inconsistently —
+           Safari ignores lengthAdjust here — so the fit is measured in
+           spine.js instead, which every engine agrees on. -->
+      <div class="hero__name">THERMITE</div>
 
       <p class="hero__lede">
         Hand it a <b>.rs</b> file or a whole cargo project. It compiles on GitHub's own

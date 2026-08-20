@@ -44,8 +44,19 @@ body[data-mode='terms'] .manual[data-active='true'] { display: grid; animation: 
 }
 .manual__pages {
   overflow: auto; scroll-behavior: smooth;
+  min-width: 0; width: 100%;
+  /* The manual's type is sized against this column, not the viewport, so a
+     narrow pane scales its headings down instead of clipping them. */
+  container-type: inline-size;
   padding: clamp(26px, 4vw, 56px) clamp(20px, 5vw, 80px) 30vh;
 }
+
+/* The terms pane has no index, so it is not a two-column grid. It used to rely
+   on an inline style to say so, and when that did not take effect the whole
+   page collapsed into the 240px index column — which is why the headings were
+   rendering as "Tern / and / secu". Stated in CSS, it cannot fall back. */
+#manual-terms .manual__body { display: block; }
+#manual-terms .manual__pages { height: 100%; }
 
 .docnav {
   appearance: none; background: none; border: 0; cursor: pointer;
@@ -64,19 +75,20 @@ body[data-mode='terms'] .manual[data-active='true'] { display: grid; animation: 
 
 /* ── manual typography ─────────────────────────────────────────────────── */
 
-.doc__head { max-width: 74ch; margin-bottom: 46px; }
+.doc__head { max-width: min(74ch, 100%); margin-bottom: 46px; }
 .doc__title {
   font-family: var(--display); font-weight: 900; font-stretch: 122%;
-  font-size: clamp(30px, 5vw, 60px); line-height: .98; letter-spacing: -.035em;
+  font-size: clamp(24px, 7cqw, 58px); line-height: .98; letter-spacing: -.03em;
   color: var(--bright); margin: 6px 0 0;
+  overflow-wrap: anywhere;
 }
 .doc__stand {
-  font-size: clamp(15px, 1.5vw, 18px); color: var(--steel);
+  font-size: clamp(14px, 1.9cqw, 18px); color: var(--steel);
   max-width: 68ch; margin: 16px 0 0; text-wrap: pretty;
 }
 
 .doc__chapter, .doc__section {
-  max-width: 74ch; padding: 34px 0 40px;
+  max-width: min(74ch, 100%); padding: 34px 0 40px;
   border-top: 1px solid var(--ash);
   margin-top: 34px;
   scroll-margin-top: 20px;
@@ -93,7 +105,8 @@ body[data-mode='terms'] .manual[data-active='true'] { display: grid; animation: 
 
 .doc__h2 {
   font-family: var(--display); font-weight: 800; font-stretch: 118%;
-  font-size: clamp(21px, 2.6vw, 32px); line-height: 1.1; letter-spacing: -.02em;
+  font-size: clamp(18px, 3.6cqw, 32px); line-height: 1.1; letter-spacing: -.02em;
+  overflow-wrap: anywhere;
   color: var(--bright); margin: 4px 0 16px;
 }
 .doc__h3 {

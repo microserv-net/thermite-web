@@ -60,8 +60,39 @@ export async function sha256Hex(bytes) {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** Stable hash over a set of {path, bytes}, matching detect.mjs exactly. */
+/**
+ * FNV-1a over the same canonical bytes. Not a cryptographic hash and never used
+ * as one — it exists so that duplicate-submission detection keeps working in a
+ * context where SubtleCrypto is withheld. Getting a dedupe check wrong costs a
+ * duplicate build; there is nothing to attack here.
+ */
+export function quickHash(files) {
+  let h = 0xcbf29ce484222325n;
+  const P = 0x100000001b3n;
+  const mix = (b) => { h ^= BigInt(b); h = (h * P) & 0xffffffffffffffffn; };
+  for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
+    for (const c of enc.encode(f.path)) mix(c);
+    mix(0);
+    // Sample large files rather than walking every byte: this only needs to
+    // distinguish one submission from another, not resist collisions.
+    const step = Math.max(1, Math.floor(f.bytes.length / 4096));
+    for (let i = 0; i < f.bytes.length; i += step) mix(f.bytes[i]);
+    mix(f.bytes.length & 0xff);
+    mix(0);
+  }
+  return 'fnv1a:' + h.toString(16).padStart(16, '0');
+}
+
+/**
+ * Stable SHA-256 over a set of {path, bytes}, matching detect.mjs exactly.
+ *
+ * Returns null — rather than throwing — when SubtleCrypto is unavailable. The
+ * tree hash is a tamper check the workflow applies only `if (manifest.treeHash)`,
+ * so a plaintext pour is complete without it. Encryption is a different matter
+ * and is refused outright.
+ */
 export async function treeHash(files) {
+  if (!cryptoAvailable()) return null;
   const parts = [];
   for (const f of [...files].sort((a, b) => (a.path < b.path ? -1 : 1))) {
     parts.push(enc.encode(f.path), new Uint8Array([0]), f.bytes, new Uint8Array([0]));
@@ -139,6 +170,7 @@ export const reducedMotion = () =>
 export function warnIfInsecureContext() {
   if (cryptoAvailable()) return true;
   if (document.getElementById('insecure-banner')) return false;
+  // Plaintext pours still work — only the sealed ones are off the table.
 
   const host = location.hostname;
   const advice = location.protocol === 'file:'
@@ -158,9 +190,11 @@ export function warnIfInsecureContext() {
     el('b', {
       style: 'display:block;font-family:var(--mono);font-size:11px;letter-spacing:.16em;' +
              'text-transform:uppercase;color:var(--fault);margin-bottom:6px',
-      text: 'Web Crypto unavailable — pours are disabled',
+      text: 'Web Crypto unavailable — encrypted pours are disabled',
     }),
-    el('span', { text: advice }),
+    el('span', {}, 'Plain pours still work. Encrypted pours, key generation and ' +
+      'opening a sealed ingot all need SubtleCrypto, which the browser only exposes ' +
+      'in a secure context. ' + advice),
   );
 
   document.body.prepend(bar);

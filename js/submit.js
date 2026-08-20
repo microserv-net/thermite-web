@@ -6,7 +6,7 @@
 
 import { APP, LIMITS, TARGETS } from './config.js';
 import { gh } from './github.js';
-import { ulid, toBase64, enc, treeHash, pool, sleep, backoff } from './util.js';
+import { ulid, toBase64, enc, treeHash, quickHash, pool, sleep, backoff } from './util.js';
 import { pathProblem } from './unzip.js';
 import { seal, packCharge, importPublicPem } from './crypto.js';
 
@@ -108,8 +108,10 @@ export async function submit({
   const id = ulid();
 
   // Deduplication runs on the plaintext, because a sealed charge is different
-  // bytes every time by design.
-  const plainHash = await treeHash(files.map((f) => ({ path: `source/${f.path}`, bytes: f.bytes })));
+  // bytes every time by design. It uses a non-cryptographic hash so that it
+  // keeps working where SubtleCrypto is withheld — a dedupe check is a
+  // convenience, not a security control.
+  const plainHash = quickHash(files.map((f) => ({ path: `source/${f.path}`, bytes: f.bytes })));
 
   let scoped;
   let encryption = null;
@@ -129,6 +131,10 @@ export async function submit({
     if (encrypt?.artifactKeyId) encryption = { artifact: { keyId: encrypt.artifactKeyId } };
   }
 
+  // Null when SubtleCrypto is unavailable. The workflow only verifies the tree
+  // hash `if (manifest.treeHash)`, so omitting it costs the tamper check and
+  // nothing else — a plain pour still builds. Encryption, which genuinely
+  // cannot proceed without Web Crypto, has already been refused above.
   const hash = await treeHash(scoped);
 
   const dupe = duplicateCheck(plainHash);
@@ -157,7 +163,7 @@ export async function submit({
     client: `thermite-web/${APP.version}`,
     files: scoped.length,
     bytes,
-    treeHash: hash,
+    ...(hash ? { treeHash: hash } : {}),
     ...(encryption ? { encryption } : {}),
     ...(cleanup ? { cleanup } : {}),
   };
