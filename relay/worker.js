@@ -8,7 +8,7 @@
 // This is the smallest thing that gets past it. It has no database, no session,
 // no logging, no state of any kind. It adds a secret to two requests and adds
 // CORS headers to the two responses. Deploy it or don't — leave RELAY_URL empty
-// in web/js/config.js and Thermite runs entirely on fine-grained tokens with no
+// in js/config.js and Thermite runs entirely on fine-grained tokens with no
 // infrastructure at all.
 //
 // Cloudflare Workers:

@@ -15,9 +15,9 @@ and what Thermite does instead.
 ## Layout
 
 ```
-web/                      the site — deploy this to GitHub Pages
+./                        the site — deploy this to GitHub Pages
 build-repo-template/      what gets written into each user's crucible
-tools/embed-workflows.mjs regenerates web/js/workflows.js from that template
+tools/embed-workflows.mjs regenerates js/workflows.js from that template
 relay/                    optional 50-line stateless OAuth relay (you may skip it)
 web-repo-workflow/        the Pages deploy workflow for the website repo
 ARCHITECTURE.md           the design
@@ -28,7 +28,7 @@ ARCHITECTURE.md           the design
 1. Create a **new, separate** repository — `thermite-web`. It must not be anyone's
    build repository; that separation is why deploying the site can never start a
    compilation.
-2. Copy `web/` to its root, and `web-repo-workflow/pages.yml` to
+2. Copy the site files into the repository root, and `web-repo-workflow/pages.yml` to
    `.github/workflows/pages.yml`.
 3. Settings → Pages → Source: **GitHub Actions**. Push.
 
@@ -37,7 +37,7 @@ themselves, and Thermite provisions their `thermite-crucible` repository on firs
 use.
 
 Optionally, deploy `relay/worker.js` to Cloudflare Workers and set `OAUTH.RELAY_URL`
-and `OAUTH.CLIENT_ID` in `web/js/config.js` to enable *Sign in with GitHub* via the
+and `OAUTH.CLIENT_ID` in `js/config.js` to enable *Sign in with GitHub* via the
 device flow. Leave them blank and that option never appears.
 
 ## Changing the build workflow
@@ -48,7 +48,7 @@ Edit the real files under `build-repo-template/`, then:
 node tools/embed-workflows.mjs
 ```
 
-This regenerates `web/js/workflows.js` and bumps the template revision, which is
+This regenerates `js/workflows.js` and bumps the template revision, which is
 how existing crucibles are offered a one-click re-lining.
 
 ## What it does not claim

@@ -1,6 +1,6 @@
 // THERMITE — THERMITE-ENC v1, runner side.
 //
-// The exact format implemented in web/js/crypto.js. Change one, change both.
+// The exact format implemented in js/crypto.js. Change one, change both.
 //
 //   ┌────────────┬─────────────┬──────────────┬──────────────────────────┐
 //   │ "THRMENC1" │ u32be hdrLen│ header (JSON)│ ciphertext ‖ GCM tag     │

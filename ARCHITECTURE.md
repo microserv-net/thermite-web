@@ -662,7 +662,7 @@ public repository that would let anyone confirm a guess at the source. And there
 is no password-based mode: a passphrase-derived key on a public artifact is an
 offline-crackable artifact.
 
-The format is implemented twice — `web/js/crypto.js` and
+The format is implemented twice — `js/crypto.js` and
 `build-repo-template/scripts/tenc.mjs` — because the browser and the runner do
 not share a runtime. Both are tested against each other in both directions,
 including tamper detection and wrong-key rejection.
@@ -780,7 +780,7 @@ Eight chapters — getting started, single-file builds, cargo projects, targets,
 encryption, cleanup, security model, and an FAQ of the twelve questions people
 actually ask, including *"Is Thermite a sandbox?"* answered *"No."*
 
-Content lives as structured data (`web/js/docs.js`) and is rendered through the
+Content lives as structured data (`js/docs.js`) and is rendered through the
 same element helpers as everything else, so it inherits the design system rather
 than importing a second one. Inline markup is limited to bold and code, and
 everything is escaped before rendering.
