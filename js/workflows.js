@@ -5,7 +5,7 @@
 // compares them on every visit so an outdated crucible can be re-lined with one
 // click.
 
-export const TEMPLATE_REVISION = "e53722d7e7c1";
+export const TEMPLATE_REVISION = "9939383c4118";
 
 export const TEMPLATE = {
   ".github/workflows/build.yml": `name: Thermite pour
@@ -44,6 +44,11 @@ jobs:
       target:       \${{ steps.detect.outputs.target }}
       project_type: \${{ steps.detect.outputs.project_type }}
       entry:        \${{ steps.detect.outputs.entry }}
+      source_kind:    \${{ steps.detect.outputs.source_kind }}
+      src_owner:      \${{ steps.detect.outputs.src_owner }}
+      src_repo:       \${{ steps.detect.outputs.src_repo }}
+      src_ref:        \${{ steps.detect.outputs.src_ref }}
+      src_subdir:     \${{ steps.detect.outputs.src_subdir }}
       sealed:         \${{ steps.detect.outputs.sealed }}
       sealed_source:  \${{ steps.detect.outputs.sealed_source }}
       sealed_artifact: \${{ steps.detect.outputs.sealed_artifact }}
@@ -93,6 +98,10 @@ jobs:
       THERMITE_EXT:          \${{ needs.detect.outputs.ext }}
       THERMITE_PACK:         \${{ needs.detect.outputs.pack }}
       THERMITE_SEALED:       \${{ needs.detect.outputs.sealed == 'true' && '1' || '0' }}
+      THERMITE_SRC_OWNER:    \${{ needs.detect.outputs.src_owner }}
+      THERMITE_SRC_REPO:     \${{ needs.detect.outputs.src_repo }}
+      THERMITE_SRC_REF:      \${{ needs.detect.outputs.src_ref }}
+      THERMITE_SRC_SUBDIR:   \${{ needs.detect.outputs.src_subdir }}
     defaults:
       run:
         shell: bash
@@ -130,6 +139,15 @@ jobs:
             > relay.out 2>&1 &
           echo "$!" > relay.pid
           sleep 1
+
+      - name: Fetch the source repository
+        if: needs.detect.outputs.source_kind == 'repo'
+        # Anonymous, shallow, no credential. The clone is ephemeral: nothing
+        # fetched here is ever committed back to the crucible.
+        env:
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
+        run: node scripts/fetch.mjs
 
       - name: Unseal the charge
         if: needs.detect.outputs.sealed_source == 'true'
@@ -172,12 +190,12 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Shed the plaintext
-        if: always() && needs.detect.outputs.sealed_source == 'true'
+      - name: Shed the working tree
+        if: always() && (needs.detect.outputs.sealed_source == 'true' || needs.detect.outputs.source_kind == 'repo')
         # Best effort, not a guarantee: the runner VM is destroyed after the
         # job, which is the actual assurance. See the crucible README.
         run: |
-          rm -rf "jobs/\${THERMITE_JOB}/source" cargo-messages.json || true
+          rm -rf "jobs/\${THERMITE_JOB}/source" cargo-messages.json .thermite-fetch || true
           echo "##thermite:plaintext-shed"
 
       - name: Close the log
@@ -532,7 +550,7 @@ catch (e) { refuse(\`manifest.json is not valid JSON: \${e.message}\`); }
 const ALLOWED_KEYS = new Set([
   'schema', 'id', 'toolchain', 'target', 'projectType', 'name',
   'entry', 'submittedAt', 'client', 'files', 'bytes', 'treeHash',
-  'encryption', 'cleanup',
+  'encryption', 'cleanup', 'source',
 ]);
 const unknown = Object.keys(manifest).filter((k) => !ALLOWED_KEYS.has(k));
 if (unknown.length) refuse(\`manifest.json has unrecognised keys: \${unknown.join(', ')}\`);
@@ -562,6 +580,38 @@ if (/^\\d/.test(toolchain)) {
 const projectType = manifest.projectType;
 if (projectType !== 'single' && projectType !== 'cargo') refuse('projectType must be "single" or "cargo".');
 
+// --- where the source comes from -------------------------------------------
+// A pour either CARRIES its source (uploaded, plaintext or sealed) or NAMES a
+// public repository for the runner to fetch. A named repository is not
+// committed here, so this job directory holds a manifest and nothing else.
+const source = manifest.source || null;
+let repoSource = null;
+if (source !== null) {
+  if (typeof source !== 'object') refuse('manifest.source must be an object.');
+  if (source.kind !== 'repo') refuse(\`manifest.source.kind must be "repo", not "\${String(source.kind).slice(0, 40)}".\`);
+  const bad = Object.keys(source).filter((k) => !['kind', 'owner', 'repo', 'ref', 'subdir', 'sha'].includes(k));
+  if (bad.length) refuse(\`manifest.source has unrecognised keys: \${bad.join(', ')}\`);
+
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(String(source.owner || ''))) {
+    refuse(\`"\${String(source.owner).slice(0, 60)}" is not a valid GitHub owner name.\`);
+  }
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(String(source.repo || ''))) {
+    refuse(\`"\${String(source.repo).slice(0, 60)}" is not a valid repository name.\`);
+  }
+  const ref = String(source.ref || '');
+  if (!/^[A-Za-z0-9._\\/-]{1,200}$/.test(ref) || ref.split('/').some((p) => p === '..' || p === '')) {
+    refuse(\`"\${ref.slice(0, 60)}" is not a ref Thermite will pass to git.\`);
+  }
+  const sub = String(source.subdir || '');
+  if (sub) {
+    if (!/^[A-Za-z0-9._\\/-]{1,200}$/.test(sub)) refuse(\`"\${sub.slice(0, 80)}" is not a path Thermite accepts.\`);
+    if (sub.startsWith('/') || sub.split('/').some((p) => p === '..' || p === '.' || p === '')) {
+      refuse(\`"\${sub}" escapes the repository.\`);
+    }
+  }
+  repoSource = { owner: source.owner, repo: source.repo, ref, subdir: sub };
+}
+
 // --- encryption declaration -------------------------------------------------
 // A sealed pour carries ciphertext, so its file paths cannot be checked here.
 // unseal.mjs repeats every one of the checks below against the decrypted
@@ -581,6 +631,12 @@ if (encryption !== null) {
 }
 const sealedSource = !!encryption?.source;
 const sealedArtifact = !!encryption?.artifact;
+
+// Sealing a source that is already a public repository protects nothing, and
+// pretending otherwise would be worse than refusing.
+if (repoSource && sealedSource) {
+  refuse('this pour names a public repository and also asks for source encryption. The source is already public; sealing it would protect nothing.');
+}
 
 // Fail early and legibly rather than after a 20-minute build: the public key
 // the runner needs to seal the ingot must exist at THIS commit.
@@ -625,10 +681,18 @@ for (const rel of files) {
 }
 
 const sources = files.filter((f) => f !== 'manifest.json');
-if (!sources.length) refuse('the pour contains no source files.');
+if (repoSource) {
+  if (sources.length) {
+    refuse(\`a pour that names a repository carries no files, but this one also has: \${sources.slice(0, 5).join(', ')}\`);
+  }
+} else if (!sources.length) {
+  refuse('the pour contains no source files.');
+}
 
 let entry;
-if (sealedSource) {
+if (repoSource) {
+  entry = '';   // resolved by fetch.mjs, once the repository is on the runner
+} else if (sealedSource) {
   if (!sources.includes('source.tenc')) {
     refuse('this pour declares an encrypted source but carries no source.tenc container.');
   }
@@ -654,12 +718,12 @@ if (sealedSource) {
   if (rs.length !== 1) refuse(\`single-file pours need exactly one .rs file, found \${rs.length}.\`);
   entry = rs[0];
 }
-if (!sealedSource && projectType === 'single' && spec.wasm) {
+if (!sealedSource && !repoSource && projectType === 'single' && spec.wasm) {
   refuse(\`\\\`\${target}\\\` needs a cargo project — rustc alone cannot link a bare wasm binary usefully.\`);
 }
 
 // ---- tamper check ----
-if (manifest.treeHash) {
+if (manifest.treeHash && !repoSource) {
   const h = createHash('sha256');
   for (const rel of sources.slice().sort()) {
     h.update(rel, 'utf8'); h.update('\\0');
@@ -681,6 +745,11 @@ emit({
   target,
   project_type: projectType,
   entry,
+  source_kind: repoSource ? 'repo' : 'upload',
+  src_owner: repoSource ? repoSource.owner : '',
+  src_repo: repoSource ? repoSource.repo : '',
+  src_ref: repoSource ? repoSource.ref : '',
+  src_subdir: repoSource ? repoSource.subdir : '',
   sealed: String(sealedSource || sealedArtifact),
   sealed_source: String(sealedSource),
   sealed_artifact: String(sealedArtifact),
@@ -703,6 +772,7 @@ note(
   \`| | |\\n|---|---|\\n\` +
   \`| Toolchain | \\\`\${toolchain}\\\` |\\n| Target | \\\`\${target}\\\` |\\n\` +
   \`| Kind | \${projectType === 'cargo' ? 'cargo project' : 'single file'} |\\n\` +
+  \`| Source | \${repoSource ? \`\${repoSource.owner}/\${repoSource.repo} @ \${repoSource.ref}\${repoSource.subdir ? \` · \${repoSource.subdir}\` : ''}\` : 'uploaded'} |\\n\` +
   \`| Sealed | \${sealedSource ? 'source' : '—'}\${sealedArtifact ? (sealedSource ? ' + ingot' : 'ingot') : ''} |\\n\` +
   \`| Size | \${(total / 1024).toFixed(1)} KiB |\\n\` +
   \`| Runner | \\\`\${spec.runner}\\\` (\${spec.mode}) |\\n\`
@@ -979,6 +1049,177 @@ const summary =
   \`sealed for key \${result.header.kem.keyId}.\\n\`;
 process.stdout.write(summary);
 appendFileSync('pour.log', \`##thermite:unsealed \${written.length}\\n\${summary}\`);
+`,
+  "scripts/fetch.mjs": `#!/usr/bin/env node
+// THERMITE — fetch.mjs
+//
+// Bring a public GitHub repository into jobs/<id>/source/ so the compiler can
+// see it. Used when a pour names a repository instead of carrying an upload.
+//
+// Three things this must get right.
+//
+// 1. Nothing fetched here is ever committed back to the crucible. The clone is
+//    ephemeral, lives on the runner, and dies with it. That is why the pour
+//    commit for a repo source contains a manifest and nothing else.
+//
+// 2. No credential. The clone is an anonymous HTTPS fetch of a public
+//    repository. A private repository fails here, deliberately and legibly:
+//    the only token on the runner is scoped to the crucible, and handing a
+//    build broader access to make this work would be a bad trade.
+//
+// 3. Everything from the manifest is re-validated before it reaches git.
+//    detect.mjs has already checked it; this checks it again, because the
+//    values end up in a URL and a filesystem path.
+
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync, mkdirSync, rmSync, renameSync, appendFileSync,
+  readdirSync, statSync, lstatSync,
+} from 'node:fs';
+import { join, resolve, sep } from 'node:path';
+
+const LIMITS = {
+  fileBytes: 16 * 1024 * 1024,     // a repo may legitimately carry test fixtures
+  totalBytes: 256 * 1024 * 1024,
+  fileCount: 20000,
+};
+
+const JOB = process.env.THERMITE_JOB;
+const KIND = process.env.THERMITE_PROJECT_TYPE;
+const OWNER = process.env.THERMITE_SRC_OWNER || '';
+const REPO = process.env.THERMITE_SRC_REPO || '';
+const REF = process.env.THERMITE_SRC_REF || '';
+const SUBDIR = process.env.THERMITE_SRC_SUBDIR || '';
+
+const OWNER_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const REPO_RE = /^[A-Za-z0-9._-]{1,100}$/;
+const REF_RE = /^[A-Za-z0-9._\\/-]{1,200}$/;
+const SHA_RE = /^[0-9a-f]{40}$/;
+
+function fail(message, code = 94) {
+  const text = \`\\nThermite could not fetch the source repository: \${message}\\n\`;
+  process.stdout.write(text);
+  try { appendFileSync('pour.log', text); } catch {}
+  process.exit(code);
+}
+
+if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(JOB || '')) fail('invalid job id');
+if (!OWNER_RE.test(OWNER)) fail(\`"\${OWNER.slice(0, 60)}" is not a valid GitHub owner name\`);
+if (!REPO_RE.test(REPO)) fail(\`"\${REPO.slice(0, 60)}" is not a valid repository name\`);
+if (!REF_RE.test(REF) || REF.split('/').some((p) => p === '..' || p === '')) {
+  fail(\`"\${REF.slice(0, 60)}" is not a ref Thermite will pass to git\`);
+}
+if (SUBDIR) {
+  if (!/^[A-Za-z0-9._\\/-]{1,200}$/.test(SUBDIR)) fail(\`"\${SUBDIR.slice(0, 80)}" is not a path Thermite accepts\`);
+  if (SUBDIR.startsWith('/') || SUBDIR.split('/').some((p) => p === '..' || p === '.' || p === '')) {
+    fail(\`"\${SUBDIR}" escapes the repository\`);
+  }
+}
+
+const jobDir = \`jobs/\${JOB}\`;
+const dest = join(jobDir, 'source');
+const work = '.thermite-fetch';
+const url = \`https://github.com/\${OWNER}/\${REPO}.git\`;
+
+const say = (m) => { process.stdout.write(m + '\\n'); try { appendFileSync('pour.log', m + '\\n'); } catch {} };
+
+rmSync(work, { recursive: true, force: true });
+rmSync(dest, { recursive: true, force: true });
+
+say(\`$ git clone --depth 1 \${url} (ref \${REF})\`);
+
+const git = (args) => execFileSync('git', args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+
+try {
+  if (SHA_RE.test(REF)) {
+    // --branch does not take a commit sha, so a pinned commit is fetched
+    // explicitly. Still a shallow fetch: one commit, no history.
+    mkdirSync(work, { recursive: true });
+    git(['-C', work, 'init', '-q']);
+    git(['-C', work, 'remote', 'add', 'origin', url]);
+    git(['-C', work, 'fetch', '-q', '--depth', '1', '--no-tags', 'origin', REF]);
+    git(['-C', work, 'checkout', '-q', 'FETCH_HEAD']);
+  } else {
+    git(['clone', '-q', '--depth', '1', '--no-tags', '--single-branch',
+      '--branch', REF, url, work]);
+  }
+} catch (e) {
+  const err = String(e.stderr || e.message || '');
+  if (/Authentication failed|could not read Username|not found/i.test(err)) {
+    fail(
+      \`\${OWNER}/\${REPO} could not be read anonymously. Thermite builds public repositories \` +
+      'only — the runner carries no credential that could reach a private one, and giving it ' +
+      'one would widen what a build can touch. Make the repository public, or upload the ' +
+      'project instead.');
+  }
+  if (/Remote branch .* not found|couldn't find remote ref/i.test(err)) {
+    fail(\`\${OWNER}/\${REPO} has no ref called "\${REF}".\`);
+  }
+  fail(err.split('\\n').slice(0, 3).join(' ').trim() || 'git failed');
+}
+
+// ------------------------------------------------------------- the subdir --
+
+const root = resolve(work);
+const picked = SUBDIR ? resolve(work, SUBDIR) : root;
+if (picked !== root && !picked.startsWith(root + sep)) fail(\`"\${SUBDIR}" escapes the repository\`);
+if (!existsSync(picked) || !statSync(picked).isDirectory()) {
+  fail(\`"\${SUBDIR || '.'}" is not a directory in \${OWNER}/\${REPO} at \${REF}.\`);
+}
+
+// The clone's history is not the pour's business, and .git would otherwise be
+// copied into the build tree.
+rmSync(join(work, '.git'), { recursive: true, force: true });
+
+mkdirSync(jobDir, { recursive: true });
+renameSync(picked, dest);
+rmSync(work, { recursive: true, force: true });
+
+// ------------------------------------------------------------- inspection --
+
+let files = 0;
+let total = 0;
+(function walk(dir) {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) { walk(p); continue; }
+    if (!e.isFile()) continue;                       // links and specials are left alone
+    files++;
+    if (files > LIMITS.fileCount) fail(\`that directory holds more than \${LIMITS.fileCount} files\`);
+    let size = 0;
+    try { size = lstatSync(p).size; } catch { continue; }
+    if (size > LIMITS.fileBytes) fail(\`"\${p.slice(dest.length + 1)}" is larger than the \${LIMITS.fileBytes / 1048576} MiB per-file ceiling\`);
+    total += size;
+    if (total > LIMITS.totalBytes) fail(\`that directory expands past the \${LIMITS.totalBytes / 1048576} MiB ceiling\`);
+  }
+})(dest);
+
+// ------------------------------------------------------------- entrypoint --
+
+let entry;
+if (KIND === 'cargo') {
+  if (!existsSync(join(dest, 'Cargo.toml'))) {
+    fail(
+      \`there is no Cargo.toml at "\${SUBDIR || 'the repository root'}" of \${OWNER}/\${REPO}. \` +
+      'Pick the folder that contains the Cargo.toml you want built.');
+  }
+  entry = 'source/Cargo.toml';
+} else {
+  const rs = readdirSync(dest, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.rs'))
+    .map((e) => e.name);
+  if (rs.length !== 1) {
+    fail(\`single-file pours need exactly one .rs file in that folder; it has \${rs.length}.\`);
+  }
+  entry = \`source/\${rs[0]}\`;
+}
+
+appendFileSync(process.env.GITHUB_ENV, \`THERMITE_ENTRY_UNSEALED=\${entry}\\n\`);
+
+const head = process.env.THERMITE_SRC_SHA || REF;
+say(\`  fetched \${OWNER}/\${REPO} @ \${head}\${SUBDIR ? \` · \${SUBDIR}\` : ''}\`);
+say(\`  \${files} files, \${(total / 1048576).toFixed(1)} MiB\`);
+say('##thermite:fetched');
 `,
   "scripts/relay.mjs": `#!/usr/bin/env node
 // THERMITE — relay.mjs
@@ -1429,8 +1670,9 @@ set -uo pipefail
 
 JOB_DIR="jobs/\${THERMITE_JOB}"
 SRC="\${JOB_DIR}/source"
-# On a sealed pour the entrypoint is not known until unseal.mjs has decrypted
-# and validated the charge, so it arrives under a separate name.
+# The entrypoint is not always knowable at commit time: a sealed charge is
+# ciphertext and a named repository is not there yet. Both unseal.mjs and
+# fetch.mjs resolve it on the runner and hand it over under this name.
 ENTRY="\${THERMITE_ENTRY_UNSEALED:-\${THERMITE_ENTRY:-}}"
 LOG="pour.log"
 TRIPLE_ENV=""
@@ -1540,7 +1782,7 @@ mark "compiling"
 STATUS=0
 
 if [ -z "$ENTRY" ]; then
-  say "No entrypoint was resolved for this pour. The charge was not unsealed."
+  say "No entrypoint was resolved for this pour — the source was neither unsealed nor fetched."
   exit 93
 fi
 

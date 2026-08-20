@@ -23,6 +23,7 @@ const FILES = [
   'scripts/detect.mjs',
   'scripts/tenc.mjs',
   'scripts/unseal.mjs',
+  'scripts/fetch.mjs',
   'scripts/relay.mjs',
   'scripts/package.mjs',
   'scripts/compile.sh',

@@ -56,7 +56,7 @@ export function duplicateCheck(hash) {
 
 // ------------------------------------------------------------- validate -----
 
-export function validateSelection({ toolchain, target, projectType, files }) {
+export function validateSelection({ toolchain, target, projectType, files, repoSource = null }) {
   const problems = [];
   const spec = TARGETS.find((t) => t.triple === target);
   if (!spec) problems.push(`"${target}" is not a target Thermite supports.`);
@@ -76,12 +76,92 @@ export function validateSelection({ toolchain, target, projectType, files }) {
       problems.push(`${spec.label} needs Rust ${spec.minVersion} or newer. You picked ${toolchain}.`);
     }
   }
+  if (repoSource) {
+    if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(repoSource.owner || '')) {
+      problems.push(`"${repoSource.owner}" is not a valid GitHub owner name.`);
+    }
+    if (!/^[A-Za-z0-9._-]{1,100}$/.test(repoSource.repo || '')) {
+      problems.push(`"${repoSource.repo}" is not a valid repository name.`);
+    }
+    if (!repoSource.ref) problems.push('Choose a branch, tag or commit to build.');
+    const sub = repoSource.subdir || '';
+    if (sub && (sub.startsWith('/') || sub.split('/').some((p) => p === '..' || p === '.' || p === ''))) {
+      problems.push(`"${sub}" is not a folder inside the repository.`);
+    }
+    return problems;
+  }
+
   if (!files?.length) problems.push('Nothing to compile yet.');
   for (const f of files || []) {
     const bad = pathProblem(f.path);
     if (bad) problems.push(`"${f.path}": ${bad}.`);
   }
   return problems;
+}
+
+/**
+ * A pour that names a public repository. One blob, one tree entry, one commit.
+ *
+ * Source encryption is meaningless here and is refused rather than quietly
+ * ignored: the source is already public, so sealing the pour would protect
+ * nothing while implying that it did. Artifact encryption still applies — the
+ * binary you get back is yours.
+ */
+async function submitNamed({
+  login, id, toolchain, target, projectType, name, repoSource, encrypt, cleanup, onStage,
+}) {
+  if (encrypt?.sourcePem) {
+    throw new Error(
+      'This pour names a public repository, so source encryption would protect nothing. ' +
+      'Turn source sealing off, or upload the project instead.');
+  }
+
+  const manifest = {
+    schema: 1,
+    id,
+    toolchain,
+    target,
+    projectType,
+    name: (name || repoSource.repo).slice(0, 64).replace(/[^A-Za-z0-9._ -]/g, '_'),
+    entry: '',
+    submittedAt: new Date().toISOString(),
+    client: `thermite-web/${APP.version}`,
+    files: 0,
+    bytes: 0,
+    source: {
+      kind: 'repo',
+      owner: repoSource.owner,
+      repo: repoSource.repo,
+      ref: repoSource.ref,
+      ...(repoSource.subdir ? { subdir: repoSource.subdir } : {}),
+    },
+    ...(encrypt?.artifactKeyId ? { encryption: { artifact: { keyId: encrypt.artifactKeyId } } } : {}),
+    ...(cleanup ? { cleanup } : {}),
+  };
+
+  const fingerprint = `repo:${repoSource.owner}/${repoSource.repo}@${repoSource.ref}/${repoSource.subdir || ''}`;
+  const dupe = duplicateCheck(fingerprint);
+  if (dupe) {
+    const e = new Error(`You poured exactly this ${Math.round((Date.now() - dupe.at) / 1000)}s ago as ${dupe.id}.`);
+    e.duplicateOf = dupe.id;
+    throw e;
+  }
+
+  const throttle = await throttleCheck(login);
+  if (!throttle.ok) throw new Error(throttle.message);
+
+  onStage('blobs', { total: 1, done: 0 });
+  const blob = await gh.post(`/repos/${login}/${NAME}/git/blobs`, {
+    content: toBase64(enc.encode(JSON.stringify(manifest, null, 2) + '\n')), encoding: 'base64',
+  });
+  onStage('blobs', { total: 1, done: 1 });
+
+  const entries = [{ path: `jobs/${id}/manifest.json`, mode: '100644', type: 'blob', sha: blob.sha }];
+  const commitSha = await land(login, id, toolchain, target, entries, onStage);
+
+  recordPour({ id, hash: fingerprint, at: Date.now() });
+  onStage('committed', { commitSha });
+  return { id, commitSha, manifest };
 }
 
 // --------------------------------------------------------------- submit -----
@@ -93,19 +173,27 @@ export function validateSelection({ toolchain, target, projectType, files }) {
  * @param {string} p.target
  * @param {'single'|'cargo'} p.projectType
  * @param {string} p.name
- * @param {{path:string, bytes:Uint8Array}[]} p.files   paths relative to source/
+ * @param {{path:string, bytes:Uint8Array}[]} [p.files]  paths relative to source/
+ * @param {{kind:'repo',owner,repo,ref,subdir}} [p.repoSource]  named instead of carried
  * @param {{sourcePem?:string, artifactKeyId?:string}} [p.encrypt]  sealed pour
  * @param {{policy?:string, onFailure?:string}} [p.cleanup]
  * @param {(stage:string, detail?:any)=>void} p.onStage
  */
 export async function submit({
   login, toolchain, target, projectType, name, files,
-  encrypt = null, cleanup = null, onStage = () => {},
+  repoSource = null, encrypt = null, cleanup = null, onStage = () => {},
 }) {
-  const problems = validateSelection({ toolchain, target, projectType, files });
+  const problems = validateSelection({ toolchain, target, projectType, files, repoSource });
   if (problems.length) { const e = new Error(problems[0]); e.problems = problems; throw e; }
 
   const id = ulid();
+
+  // ---- a named repository -------------------------------------------------
+  // The runner fetches it at build time, so the commit carries a manifest and
+  // nothing else. No upload, no size ceiling, and a monorepo costs one commit.
+  if (repoSource) {
+    return submitNamed({ login, id, toolchain, target, projectType, name, repoSource, encrypt, cleanup, onStage });
+  }
 
   // Deduplication runs on the plaintext, because a sealed charge is different
   // bytes every time by design. It uses a non-cryptographic hash so that it
@@ -186,8 +274,21 @@ export async function submit({
   entries.push({ path: `jobs/${id}/manifest.json`, mode: '100644', type: 'blob', sha: manifestBlob.sha });
 
   // --- tree + commit + compare-and-swap ----------------------------------
+  const commitSha = await land(login, id, toolchain, target, entries, onStage);
+
+  recordPour({ id, hash: plainHash, at: Date.now() });
+  onStage('committed', { commitSha });
+
+  return { id, commitSha, manifest };
+}
+
+/**
+ * One pour, one commit. `force:false` makes the ref update a compare-and-swap,
+ * so two tabs or two machines submitting at once both land — as two commits and
+ * two runs — instead of one silently overwriting the other.
+ */
+async function land(login, id, toolchain, target, entries, onStage) {
   onStage('commit');
-  let commitSha = null;
   for (let attempt = 0; attempt < 5; attempt++) {
     const ref = await gh.get(`/repos/${login}/${NAME}/git/ref/heads/main`);
     const parent = ref.object.sha;
@@ -201,13 +302,9 @@ export async function submit({
     });
 
     try {
-      // force:false makes this a compare-and-swap. If another tab or machine
-      // landed a pour since we read the ref, this fails and we rebuild on the
-      // new parent — both pours survive, as two commits and two runs.
       await gh.patch(`/repos/${login}/${NAME}/git/refs/heads/main`,
         { sha: commit.sha, force: false });
-      commitSha = commit.sha;
-      break;
+      return commit.sha;
     } catch (e) {
       if (e.status === 422 || e.status === 409) {
         onStage('contended', { attempt: attempt + 1 });
@@ -217,10 +314,5 @@ export async function submit({
       throw e;
     }
   }
-  if (!commitSha) throw new Error('Another pour kept landing first. Try once more.');
-
-  recordPour({ id, hash: plainHash, at: Date.now() });
-  onStage('committed', { commitSha });
-
-  return { id, commitSha, manifest };
+  throw new Error('Another pour kept landing first. Try once more.');
 }

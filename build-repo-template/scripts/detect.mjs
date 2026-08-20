@@ -158,7 +158,7 @@ catch (e) { refuse(`manifest.json is not valid JSON: ${e.message}`); }
 const ALLOWED_KEYS = new Set([
   'schema', 'id', 'toolchain', 'target', 'projectType', 'name',
   'entry', 'submittedAt', 'client', 'files', 'bytes', 'treeHash',
-  'encryption', 'cleanup',
+  'encryption', 'cleanup', 'source',
 ]);
 const unknown = Object.keys(manifest).filter((k) => !ALLOWED_KEYS.has(k));
 if (unknown.length) refuse(`manifest.json has unrecognised keys: ${unknown.join(', ')}`);
@@ -188,6 +188,38 @@ if (/^\d/.test(toolchain)) {
 const projectType = manifest.projectType;
 if (projectType !== 'single' && projectType !== 'cargo') refuse('projectType must be "single" or "cargo".');
 
+// --- where the source comes from -------------------------------------------
+// A pour either CARRIES its source (uploaded, plaintext or sealed) or NAMES a
+// public repository for the runner to fetch. A named repository is not
+// committed here, so this job directory holds a manifest and nothing else.
+const source = manifest.source || null;
+let repoSource = null;
+if (source !== null) {
+  if (typeof source !== 'object') refuse('manifest.source must be an object.');
+  if (source.kind !== 'repo') refuse(`manifest.source.kind must be "repo", not "${String(source.kind).slice(0, 40)}".`);
+  const bad = Object.keys(source).filter((k) => !['kind', 'owner', 'repo', 'ref', 'subdir', 'sha'].includes(k));
+  if (bad.length) refuse(`manifest.source has unrecognised keys: ${bad.join(', ')}`);
+
+  if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/.test(String(source.owner || ''))) {
+    refuse(`"${String(source.owner).slice(0, 60)}" is not a valid GitHub owner name.`);
+  }
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(String(source.repo || ''))) {
+    refuse(`"${String(source.repo).slice(0, 60)}" is not a valid repository name.`);
+  }
+  const ref = String(source.ref || '');
+  if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(ref) || ref.split('/').some((p) => p === '..' || p === '')) {
+    refuse(`"${ref.slice(0, 60)}" is not a ref Thermite will pass to git.`);
+  }
+  const sub = String(source.subdir || '');
+  if (sub) {
+    if (!/^[A-Za-z0-9._\/-]{1,200}$/.test(sub)) refuse(`"${sub.slice(0, 80)}" is not a path Thermite accepts.`);
+    if (sub.startsWith('/') || sub.split('/').some((p) => p === '..' || p === '.' || p === '')) {
+      refuse(`"${sub}" escapes the repository.`);
+    }
+  }
+  repoSource = { owner: source.owner, repo: source.repo, ref, subdir: sub };
+}
+
 // --- encryption declaration -------------------------------------------------
 // A sealed pour carries ciphertext, so its file paths cannot be checked here.
 // unseal.mjs repeats every one of the checks below against the decrypted
@@ -207,6 +239,12 @@ if (encryption !== null) {
 }
 const sealedSource = !!encryption?.source;
 const sealedArtifact = !!encryption?.artifact;
+
+// Sealing a source that is already a public repository protects nothing, and
+// pretending otherwise would be worse than refusing.
+if (repoSource && sealedSource) {
+  refuse('this pour names a public repository and also asks for source encryption. The source is already public; sealing it would protect nothing.');
+}
 
 // Fail early and legibly rather than after a 20-minute build: the public key
 // the runner needs to seal the ingot must exist at THIS commit.
@@ -251,10 +289,18 @@ for (const rel of files) {
 }
 
 const sources = files.filter((f) => f !== 'manifest.json');
-if (!sources.length) refuse('the pour contains no source files.');
+if (repoSource) {
+  if (sources.length) {
+    refuse(`a pour that names a repository carries no files, but this one also has: ${sources.slice(0, 5).join(', ')}`);
+  }
+} else if (!sources.length) {
+  refuse('the pour contains no source files.');
+}
 
 let entry;
-if (sealedSource) {
+if (repoSource) {
+  entry = '';   // resolved by fetch.mjs, once the repository is on the runner
+} else if (sealedSource) {
   if (!sources.includes('source.tenc')) {
     refuse('this pour declares an encrypted source but carries no source.tenc container.');
   }
@@ -280,12 +326,12 @@ if (sealedSource) {
   if (rs.length !== 1) refuse(`single-file pours need exactly one .rs file, found ${rs.length}.`);
   entry = rs[0];
 }
-if (!sealedSource && projectType === 'single' && spec.wasm) {
+if (!sealedSource && !repoSource && projectType === 'single' && spec.wasm) {
   refuse(`\`${target}\` needs a cargo project — rustc alone cannot link a bare wasm binary usefully.`);
 }
 
 // ---- tamper check ----
-if (manifest.treeHash) {
+if (manifest.treeHash && !repoSource) {
   const h = createHash('sha256');
   for (const rel of sources.slice().sort()) {
     h.update(rel, 'utf8'); h.update('\0');
@@ -307,6 +353,11 @@ emit({
   target,
   project_type: projectType,
   entry,
+  source_kind: repoSource ? 'repo' : 'upload',
+  src_owner: repoSource ? repoSource.owner : '',
+  src_repo: repoSource ? repoSource.repo : '',
+  src_ref: repoSource ? repoSource.ref : '',
+  src_subdir: repoSource ? repoSource.subdir : '',
   sealed: String(sealedSource || sealedArtifact),
   sealed_source: String(sealedSource),
   sealed_artifact: String(sealedArtifact),
@@ -329,6 +380,7 @@ note(
   `| | |\n|---|---|\n` +
   `| Toolchain | \`${toolchain}\` |\n| Target | \`${target}\` |\n` +
   `| Kind | ${projectType === 'cargo' ? 'cargo project' : 'single file'} |\n` +
+  `| Source | ${repoSource ? `${repoSource.owner}/${repoSource.repo} @ ${repoSource.ref}${repoSource.subdir ? ` · ${repoSource.subdir}` : ''}` : 'uploaded'} |\n` +
   `| Sealed | ${sealedSource ? 'source' : '—'}${sealedArtifact ? (sealedSource ? ' + ingot' : 'ingot') : ''} |\n` +
   `| Size | ${(total / 1024).toFixed(1)} KiB |\n` +
   `| Runner | \`${spec.runner}\` (${spec.mode}) |\n`

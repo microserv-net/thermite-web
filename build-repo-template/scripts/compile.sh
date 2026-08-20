@@ -15,8 +15,9 @@ set -uo pipefail
 
 JOB_DIR="jobs/${THERMITE_JOB}"
 SRC="${JOB_DIR}/source"
-# On a sealed pour the entrypoint is not known until unseal.mjs has decrypted
-# and validated the charge, so it arrives under a separate name.
+# The entrypoint is not always knowable at commit time: a sealed charge is
+# ciphertext and a named repository is not there yet. Both unseal.mjs and
+# fetch.mjs resolve it on the runner and hand it over under this name.
 ENTRY="${THERMITE_ENTRY_UNSEALED:-${THERMITE_ENTRY:-}}"
 LOG="pour.log"
 TRIPLE_ENV=""
@@ -126,7 +127,7 @@ mark "compiling"
 STATUS=0
 
 if [ -z "$ENTRY" ]; then
-  say "No entrypoint was resolved for this pour. The charge was not unsealed."
+  say "No entrypoint was resolved for this pour — the source was neither unsealed nor fetched."
   exit 93
 fi
 

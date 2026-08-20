@@ -4,6 +4,7 @@ import { APP, LIMITS, TARGETS, CHANNELS, derivedVersions } from './config.js';
 import { gh, budget, onBudget, ApiError } from './github.js';
 import * as auth from './auth.js';
 import { readZip, inspectProject, ZipError, pathProblem } from './unzip.js';
+import * as repos from './repos.js';
 import { provision, findCrucible, inspect, reline, wakeSweep, TEMPLATE_REVISION } from './provision.js';
 import { submit, throttleCheck } from './submit.js';
 import { PourWatcher, STATUS, STAGES, savePour, loadPours, forgetPours, diagnosticsFrom } from './watch.js';
@@ -33,7 +34,13 @@ const S = {
   toolchain: null,
   target: null,
   projectType: 'single',
-  files: null,          // [{path, bytes}]
+  sourceMode: 'single',   // 'single' | 'cargo' | 'repo'
+  files: null,            // [{path, bytes}] — an upload
+  repoSource: null,       // {owner, repo, ref, subdir} — a named repository
+  repoInfo: null,         // the resolved repository, for display
+  repoRefs: null,
+  repoCrates: null,
+  repoPath: '',
   projectName: null,
   watcher: null,
   releaseFeedTried: false,
@@ -385,11 +392,33 @@ function renderTargetReadout() {
 
 $('#mode-single').addEventListener('click', () => setMode('single'));
 $('#mode-cargo').addEventListener('click', () => setMode('cargo'));
+$('#mode-repo').addEventListener('click', () => setMode('repo'));
 
 function setMode(mode) {
-  S.projectType = mode;
-  $('#mode-single').setAttribute('aria-pressed', String(mode === 'single'));
-  $('#mode-cargo').setAttribute('aria-pressed', String(mode === 'cargo'));
+  S.sourceMode = mode;
+  // A named repository resolves its own kind once a folder is chosen; the two
+  // upload modes are the kind.
+  S.projectType = mode === 'repo' ? (S.projectType === 'single' ? 'single' : 'cargo') : mode;
+
+  for (const [id, key] of [['#mode-single', 'single'], ['#mode-cargo', 'cargo'], ['#mode-repo', 'repo']]) {
+    $(id).setAttribute('aria-pressed', String(mode === key));
+  }
+  $('#upload-pane').classList.toggle('hidden', mode === 'repo');
+  $('#repo-pane').classList.toggle('hidden', mode !== 'repo');
+
+  if (mode === 'repo') {
+    S.files = null;
+    $('#source-card').replaceChildren();
+    $('#source-next').disabled = !S.repoSource;
+    if (S.repoSource) { descent.unlock('seal'); descent.unlock('confirm'); renderConfirm(); }
+    if (!S.repoListLoaded) loadMyRepos();
+    return;
+  }
+
+  S.repoSource = null; S.repoInfo = null;
+  $('#repo-chosen').replaceChildren();
+  problem('#repo-problem', null, null);
+
   $('#file-input').accept = mode === 'single' ? '.rs' : '.zip';
   $('#drop-title').textContent = mode === 'single' ? 'Drop a .rs file' : 'Drop a project .zip';
   $('#drop-hint').textContent = mode === 'single'
@@ -501,12 +530,219 @@ async function takeZip(file) {
   ));
 }
 
+
+// ============================================================ repositories ===
+// A pour can name a public repository instead of carrying an upload. Nothing is
+// downloaded here — the runner clones it at build time — so this is entirely
+// about picking the right repository, ref and folder.
+
+$('#repo-tab-mine').addEventListener('click', () => repoTab('mine'));
+$('#repo-tab-any').addEventListener('click', () => repoTab('any'));
+$('#repo-refresh').addEventListener('click', () => loadMyRepos(true));
+$('#repo-rust-only').addEventListener('change', () => loadMyRepos(true));
+$('#repo-lookup').addEventListener('click', lookupRepo);
+$('#repo-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') lookupRepo(); });
+
+function repoTab(which) {
+  $('#repo-tab-mine').setAttribute('aria-pressed', String(which === 'mine'));
+  $('#repo-tab-any').setAttribute('aria-pressed', String(which === 'any'));
+  $('#repo-mine').classList.toggle('hidden', which !== 'mine');
+  $('#repo-any').classList.toggle('hidden', which !== 'any');
+  if (which === 'any') $('#repo-input').focus();
+}
+
+async function loadMyRepos(force) {
+  if (!S.login) return;
+  const list = $('#repo-list');
+  const rustOnly = $('#repo-rust-only').checked;
+  S.repoListLoaded = true;
+
+  list.replaceChildren(el('div', { class: 'empty', style: 'padding:26px' },
+    el('span', { class: 'spinner' }), ' Reading your repositories'));
+
+  try {
+    const all = await repos.listMine({ rustOnly });
+    if (!all.length) {
+      list.replaceChildren(el('div', { class: 'empty', style: 'padding:26px' },
+        el('b', { text: rustOnly ? 'No Rust repositories found' : 'No repositories found' }),
+        rustOnly
+          ? 'GitHub labels a repository by its dominant language, so a Rust crate inside a mostly-something-else repository will not appear here. Untick the filter, or use the owner/repository tab.'
+          : 'Nothing on this account that Thermite can read.'));
+      return;
+    }
+
+    list.replaceChildren(...all.map((r) => el('button', {
+      class: 'repo', type: 'button', 'aria-pressed': String(S.repoInfo?.full === r.full),
+      disabled: r.private,
+      title: r.private ? repos.whyPublicOnly(r.full) : r.full,
+      onclick: () => chooseRepo(r),
+    },
+      el('div', { class: 'repo__name', text: r.full }),
+      el('div', { class: 'repo__desc', text: r.description || (r.private ? 'private — cannot be built' : 'no description') }),
+      el('span', { class: 'repo__lang', 'data-rust': String(r.isRust), text: r.private ? 'private' : (r.language || '—') }),
+    )));
+  } catch (e) {
+    list.replaceChildren(el('div', { class: 'empty', style: 'padding:26px' },
+      el('b', { text: 'Could not list your repositories' }), describeError(e)));
+  }
+}
+
+async function lookupRepo() {
+  const btn = $('#repo-lookup');
+  btn.disabled = true; btn.textContent = 'Looking';
+  problem('#repo-problem', null, null);
+  try {
+    chooseRepo(await repos.resolve($('#repo-input').value));
+  } catch (e) {
+    problem('#repo-problem', 'Cannot use that repository', describeError(e));
+  } finally {
+    btn.disabled = false; btn.textContent = 'Look it up';
+  }
+}
+
+async function chooseRepo(info) {
+  S.repoInfo = info;
+  S.repoPath = '';
+  S.repoSource = null;
+  S.projectName = info.name;
+  $('#source-next').disabled = true;
+  problem('#repo-problem', null, null);
+  $$('#repo-list .repo').forEach((b) => b.setAttribute('aria-pressed', String(b.title === info.full)));
+
+  $('#repo-chosen').replaceChildren(el('div', { class: 'nav' },
+    el('div', { class: 'nav__bar' }, el('span', { class: 'spinner' }), ' Reading ', info.full)));
+
+  try {
+    const [refs, crates] = await Promise.all([
+      repos.refsOf(info.owner, info.name),
+      repos.findCrates(info.owner, info.name, info.defaultBranch),
+    ]);
+    S.repoRefs = refs;
+    S.repoCrates = crates;
+    S.repoRef = info.defaultBranch;
+    await renderNavigator();
+  } catch (e) {
+    $('#repo-chosen').replaceChildren();
+    problem('#repo-problem', 'Could not read that repository', describeError(e));
+  }
+}
+
+async function renderNavigator() {
+  const info = S.repoInfo;
+  if (!info) return;
+
+  const crumbs = ['', ...S.repoPath.split('/').filter(Boolean)
+    .map((_, i, arr) => arr.slice(0, i + 1).join('/'))];
+
+  const bar = el('div', { class: 'nav__bar' },
+    el('span', { text: info.full }),
+    el('select', {
+      'aria-label': 'Branch, tag or commit',
+      onchange: async (e) => {
+        S.repoRef = e.target.value;
+        S.repoPath = '';
+        S.repoCrates = await repos.findCrates(info.owner, info.name, S.repoRef).catch(() => null);
+        renderNavigator();
+      },
+    },
+      ...(S.repoRefs?.branches || []).map((b) =>
+        el('option', { value: b, selected: b === S.repoRef, text: b })),
+      ...(S.repoRefs?.tags?.length
+        ? [el('option', { disabled: true, text: '── tags ──' }),
+           ...S.repoRefs.tags.map((t) => el('option', { value: t, selected: t === S.repoRef, text: t }))]
+        : []),
+    ),
+    el('div', { class: 'nav__crumbs' }, ...crumbs.flatMap((p, i) => [
+      i ? el('span', { class: 'nav__sep', text: '/' }) : null,
+      el('button', {
+        class: 'nav__crumb', type: 'button',
+        disabled: p === S.repoPath,
+        text: i === 0 ? 'repository root' : p.split('/').pop(),
+        onclick: () => { S.repoPath = p; renderNavigator(); },
+      }),
+    ].filter(Boolean))),
+  );
+
+  const holder = el('div', { class: 'nav' }, bar,
+    el('div', { class: 'nav__list' },
+      el('div', { class: 'nav__row' }, el('span', { class: 'spinner' }), ' reading')));
+  $('#repo-chosen').replaceChildren(holder);
+
+  let verdict;
+  try {
+    verdict = await repos.inspectFolder(info.owner, info.name, S.repoRef, S.repoPath);
+  } catch (e) {
+    $('#repo-chosen').replaceChildren();
+    problem('#repo-problem', 'Could not read that folder', describeError(e));
+    return;
+  }
+
+  const crateSet = new Set(S.repoCrates?.crates || []);
+  const rows = verdict.level.dirs.map((d) => el('button', {
+    class: 'nav__row', type: 'button',
+    'data-crate': String(crateSet.has(d.path)),
+    onclick: () => { S.repoPath = d.path; renderNavigator(); },
+  },
+    el('span', { text: d.name + '/' }),
+    crateSet.has(d.path) ? el('small', { text: 'crate' }) : null,
+  ));
+
+  const quick = (S.repoCrates?.crates || []).length ? el('div', { class: 'crates' },
+    el('span', { class: 'crates__label', text: S.repoCrates.truncated
+      ? 'some crates found (repository too large to scan fully — use the navigator)'
+      : `${S.repoCrates.crates.length} crate${S.repoCrates.crates.length > 1 ? 's' : ''} found` }),
+    ...S.repoCrates.crates.map((p) => el('button', {
+      class: 'crate', type: 'button', 'aria-pressed': String(p === S.repoPath),
+      text: p || 'repository root',
+      onclick: () => { S.repoPath = p; renderNavigator(); },
+    })),
+  ) : null;
+
+  holder.replaceChildren(bar,
+    quick,
+    el('div', { class: 'nav__list' }, ...(rows.length ? rows
+      : [el('div', { class: 'nav__row', style: 'cursor:default', text: 'no sub-folders here' })])),
+    el('div', { class: 'nav__foot' },
+      el('div', { class: 'nav__verdict', 'data-ok': String(verdict.ok) },
+        el('b', { text: S.repoPath || 'repository root' }), ' — ', verdict.why),
+      el('button', {
+        class: 'btn btn--small', type: 'button', disabled: !verdict.ok,
+        text: 'Build this folder',
+        onclick: () => acceptFolder(verdict),
+      }),
+    ),
+  );
+}
+
+function acceptFolder(verdict) {
+  const info = S.repoInfo;
+  S.projectType = verdict.projectType;
+  S.repoSource = {
+    owner: info.owner, repo: info.name, ref: S.repoRef, subdir: S.repoPath,
+  };
+  S.projectName = S.repoPath ? S.repoPath.split('/').pop() : info.name;
+  S.files = null;
+
+  $('#source-next').disabled = false;
+  descent.unlock('seal');
+  descent.unlock('confirm');
+  buildTargets();
+  invalidateFrom();
+  renderConfirm();
+  toast('Source set', `${info.full} @ ${S.repoRef}${S.repoPath ? ' · ' + S.repoPath : ''}`, 'good', 4500);
+}
+
 // =============================================================== confirm =====
 
 function renderConfirm() {
-  if (!S.files) return;
+  if (!S.files && !S.repoSource) return;
   const t = TARGETS.find((x) => x.triple === S.target);
-  const total = S.files.reduce((n, f) => n + f.bytes.length, 0);
+  if (!t) return;
+
+  const sourceLine = S.repoSource
+    ? `${S.repoSource.owner}/${S.repoSource.repo} @ ${S.repoSource.ref}` +
+      (S.repoSource.subdir ? ` · ${S.repoSource.subdir}` : ' · repository root')
+    : `${S.files.length} file${S.files.length > 1 ? 's' : ''} · ${bytes(S.files.reduce((n, f) => n + f.bytes.length, 0))}`;
 
   const rows = [
     ['Crucible', `${S.login}/${APP.repoName}`],
@@ -514,7 +750,8 @@ function renderConfirm() {
     ['Target', `${t.label} — ${t.triple}`],
     ['Build', S.projectType === 'cargo' ? 'cargo build --release' : 'rustc -O'],
     ['Runner', `${t.runner} · ${t.mode}`],
-    ['Source', `${S.files.length} file${S.files.length > 1 ? 's' : ''} · ${bytes(total)}`],
+    ['Source', sourceLine],
+    ...(S.repoSource ? [['Fetched', 'Cloned by the runner at build time — nothing is uploaded, and only the manifest is committed']] : []),
     ['Artifact', S.sealOn
       ? `Sealed .tenc container holding the .${t.pack}`
       : `.${t.pack} with the binary, SHA256SUMS and a build record`],
@@ -571,7 +808,10 @@ async function startPour() {
     // A sealed pour is only submitted when sealing is verifiably ready. It is
     // never silently downgraded to plaintext.
     if (S.sealOn) {
-      const verdict = keys.readiness(S.keyState || {}, { source: true, artifact: true });
+      // A named public repository cannot meaningfully have its source sealed,
+      // so only the artifact side is required in that case.
+      const want = { source: !S.repoSource, artifact: true };
+      const verdict = keys.readiness(S.keyState || {}, want);
       if (!verdict.ok) throw new Error(`Encryption is not ready: ${verdict.problems[0]}`);
     }
 
@@ -582,12 +822,14 @@ async function startPour() {
       projectType: S.projectType,
       name: S.projectName,
       files: S.files,
+      repoSource: S.repoSource,
       encrypt: S.sealOn
         ? { sourcePem: S.keyState.sourcePem, artifactKeyId: S.keyState.artifactKeyId }
         : null,
       cleanup: { policy: S.policy, onFailure: S.onFailure },
       onStage(stage, d) {
         if (stage === 'sealing') btn.textContent = 'Sealing';
+        if (stage === 'naming') btn.textContent = 'Recording the source';
         if (stage === 'blobs') btn.textContent = `Uploading ${d.done}/${d.total}`;
         if (stage === 'commit') btn.textContent = 'Committing';
         if (stage === 'contended') btn.textContent = `Retrying (${d.attempt})`;
@@ -600,6 +842,7 @@ async function startPour() {
       projectType: S.projectType, name: S.projectName,
       submittedAt: manifest.submittedAt,
       sealed: !!manifest.encryption,
+      fromRepo: manifest.source ? `${manifest.source.owner}/${manifest.source.repo}` : null,
       policy: S.policy, onFailure: S.onFailure,
     };
     savePour(pour);

@@ -183,7 +183,7 @@ export const DOCS = [
       ] },
       { h: 'Your crucible', p: [
         'A public repository called `thermite-crucible`, created on your account the first time you connect. It holds the workflows, your in-flight pours, and your encryption public keys.',
-        'It is public because GitHub only makes Actions minutes unmetered for public repositories. Making it private would meter every build against your free 2,000 minutes.',
+        'It is public because of how GitHub bills Actions: public repositories are not charged per minute, while a private one would meter every build against your included allowance. That is a billing difference, not a promise of unlimited compute — concurrency caps, job timeouts and fair-use policies still apply, and they are GitHub\u2019s to change.',
         'You can delete it whenever you like — from the ledger, with **Decommission crucible**, or from GitHub directly. Thermite will offer to build a new one next time.',
       ] },
     ],
@@ -240,8 +240,41 @@ export const DOCS = [
     ],
   },
   {
-    id: 'targets',
+    id: 'repo',
     eyebrow: '04',
+    title: 'Building from a GitHub repository',
+    intro: 'No upload at all — name a public repository and the runner fetches it.',
+    blocks: [
+      { h: 'Why this is different', p: [
+        'An uploaded project is read in your browser, committed into your crucible, and compiled from there. A **named** repository is not: the pour commit carries a manifest and nothing else, and the runner clones the repository itself when the build starts.',
+        'So there is no 12 MiB ceiling, no zipping, and a large workspace costs one commit instead of an upload. It also means the source is never copied into your crucible, which is worth knowing either way.',
+      ] },
+      { h: 'Choosing one', steps: [
+        ['Pick from your repositories', 'Filtered to the ones GitHub labels as Rust. That is a repository\u2019s dominant language, so a Rust crate inside a mostly-TypeScript repository will not show — untick the filter or type the name.'],
+        ['Or type owner/repository', 'A full GitHub URL works too; it is trimmed down.'],
+        ['Choose a branch, tag or commit', 'Defaults to the repository\u2019s default branch. A pinned commit builds exactly that commit, forever.'],
+        ['Choose the build root', 'Detected crates are offered as one-click chips; the navigator walks the tree if you would rather. "Repository root" is always available.'],
+        ['Pour', 'The confirmation sheet shows exactly which repository, ref and folder will be fetched.'],
+      ] },
+      { h: 'Public repositories only', tone: 'warn', p: [
+        'The clone on the runner is **anonymous**. The only credential there is a token scoped to your crucible, and handing a build broader access — enough to read your private repositories — would widen what any submitted code could touch. That is a bad trade for a convenience, so it is not offered.',
+        'To build a private project, upload it. If it must not sit in the open, upload it as an encrypted pour.',
+      ] },
+      { h: 'Encryption', p: [
+        'Source encryption is **refused** for a named repository rather than silently ignored: the source is already public, so sealing the pour would protect nothing while implying that it did.',
+        'Artifact encryption still applies. The binary that comes back is sealed for your key, and so is the build log.',
+      ] },
+      { h: 'What gets built', list: [
+        'A folder with a `Cargo.toml` builds with `cargo build --release`.',
+        'A folder with exactly one `.rs` file and no `Cargo.toml` compiles with rustc.',
+        'Anything else is refused, with the reason, before you can pour it.',
+        'The clone is shallow — one commit, no history — and the working tree is removed after the ingot is cast.',
+      ] },
+    ],
+  },
+  {
+    id: 'targets',
+    eyebrow: '05',
     title: 'Targets, native and cross',
     intro: 'Eleven targets. The difference between them is not cosmetic.',
     blocks: [
@@ -265,7 +298,7 @@ export const DOCS = [
   },
   {
     id: 'encryption',
-    eyebrow: '05',
+    eyebrow: '06',
     title: 'Encrypted pours',
     intro: 'Optional. Off by default. Worth understanding completely before you rely on it.',
     blocks: [
@@ -315,7 +348,7 @@ export const DOCS = [
   },
   {
     id: 'cleanup',
-    eyebrow: '06',
+    eyebrow: '07',
     title: 'Cleanup',
     intro: 'What Thermite removes, when, and what GitHub keeps regardless.',
     blocks: [
@@ -345,7 +378,7 @@ export const DOCS = [
   },
   {
     id: 'security',
-    eyebrow: '07',
+    eyebrow: '08',
     title: 'Security model',
     intro: 'Stated plainly, including the parts that are not reassuring.',
     blocks: [
@@ -376,7 +409,7 @@ export const DOCS = [
   },
   {
     id: 'faq',
-    eyebrow: '08',
+    eyebrow: '09',
     title: 'Questions',
     intro: null,
     faq: [
@@ -391,7 +424,7 @@ export const DOCS = [
       ['Where are builds executed?',
         'On GitHub-hosted runners: `ubuntu-latest`, `windows-latest` or `macos-latest`, depending on the target. Never on a self-hosted runner, and never on any machine belonging to Thermite.'],
       ['Why is my crucible repository public?',
-        'GitHub makes Actions minutes unmetered for public repositories and metered for private ones. A private crucible would consume your free 2,000 minutes a month within a few dozen builds. If your source must not be public, use an encrypted pour.'],
+        'Billing. GitHub does not charge per minute for Actions on public repositories, while a private one draws down your included allowance — a few dozen builds would exhaust it. That is not the same as unlimited compute: GitHub\u2019s concurrency limits, job timeouts and fair-use policies still apply to your account, and Thermite adds its own cap of 12 pours an hour. If your source must not be public, use an encrypted pour.'],
       ['Why does Thermite need GitHub access?',
         'To create the crucible, commit your pour, install the workflow, and read run status. Five permissions, all on your own account, all revocable in one click from GitHub\u2019s settings. It never asks for organisation scopes or for access to other repositories.'],
       ['Can I delete my crucible?',
@@ -403,7 +436,7 @@ export const DOCS = [
       ['Can I switch GitHub accounts?',
         'Sign out first. That clears the token, the session, the cached identity and every in-memory reference to the previous crucible. Thermite will not carry one account\u2019s repository into another account\u2019s session.'],
       ['Does Thermite work without any server at all?',
-        'Yes, in its default mode. The one thing a static page provably cannot do is exchange an OAuth code for a token — GitHub\u2019s login endpoints send no CORS headers and require a client secret. That is why the default sign-in is a token you create yourself, and why the optional device-flow relay is a separate, stateless component you may simply not deploy.'],
+        'Thermite has no application server of its own \u2014 no backend, no database, no queue. The one thing a static page provably cannot do is exchange an OAuth code for a token — GitHub\u2019s login endpoints send no CORS headers and require a client secret. That is why the default sign-in is a token you create yourself, and why the optional device-flow relay is a separate, stateless component you may simply not deploy.'],
     ],
   },
 ];

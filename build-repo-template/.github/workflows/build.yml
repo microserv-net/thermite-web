@@ -34,6 +34,11 @@ jobs:
       target:       ${{ steps.detect.outputs.target }}
       project_type: ${{ steps.detect.outputs.project_type }}
       entry:        ${{ steps.detect.outputs.entry }}
+      source_kind:    ${{ steps.detect.outputs.source_kind }}
+      src_owner:      ${{ steps.detect.outputs.src_owner }}
+      src_repo:       ${{ steps.detect.outputs.src_repo }}
+      src_ref:        ${{ steps.detect.outputs.src_ref }}
+      src_subdir:     ${{ steps.detect.outputs.src_subdir }}
       sealed:         ${{ steps.detect.outputs.sealed }}
       sealed_source:  ${{ steps.detect.outputs.sealed_source }}
       sealed_artifact: ${{ steps.detect.outputs.sealed_artifact }}
@@ -83,6 +88,10 @@ jobs:
       THERMITE_EXT:          ${{ needs.detect.outputs.ext }}
       THERMITE_PACK:         ${{ needs.detect.outputs.pack }}
       THERMITE_SEALED:       ${{ needs.detect.outputs.sealed == 'true' && '1' || '0' }}
+      THERMITE_SRC_OWNER:    ${{ needs.detect.outputs.src_owner }}
+      THERMITE_SRC_REPO:     ${{ needs.detect.outputs.src_repo }}
+      THERMITE_SRC_REF:      ${{ needs.detect.outputs.src_ref }}
+      THERMITE_SRC_SUBDIR:   ${{ needs.detect.outputs.src_subdir }}
     defaults:
       run:
         shell: bash
@@ -120,6 +129,15 @@ jobs:
             > relay.out 2>&1 &
           echo "$!" > relay.pid
           sleep 1
+
+      - name: Fetch the source repository
+        if: needs.detect.outputs.source_kind == 'repo'
+        # Anonymous, shallow, no credential. The clone is ephemeral: nothing
+        # fetched here is ever committed back to the crucible.
+        env:
+          GITHUB_TOKEN: ''
+          GH_TOKEN: ''
+        run: node scripts/fetch.mjs
 
       - name: Unseal the charge
         if: needs.detect.outputs.sealed_source == 'true'
@@ -162,12 +180,12 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-      - name: Shed the plaintext
-        if: always() && needs.detect.outputs.sealed_source == 'true'
+      - name: Shed the working tree
+        if: always() && (needs.detect.outputs.sealed_source == 'true' || needs.detect.outputs.source_kind == 'repo')
         # Best effort, not a guarantee: the runner VM is destroyed after the
         # job, which is the actual assurance. See the crucible README.
         run: |
-          rm -rf "jobs/${THERMITE_JOB}/source" cargo-messages.json || true
+          rm -rf "jobs/${THERMITE_JOB}/source" cargo-messages.json .thermite-fetch || true
           echo "##thermite:plaintext-shed"
 
       - name: Close the log

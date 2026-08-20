@@ -70,11 +70,11 @@
       <div class="hero__name">THERMITE</div>
 
       <p class="hero__lede">
-        Hand it a <b>.rs</b> file or a whole cargo project. It compiles on GitHub's own
-        runners &mdash; in <b>your</b> account, on <b>your</b> quota &mdash; and hands back a
-        binary for any of eleven targets. There is no server behind this page. There is
-        no queue you are sharing. There is nothing here but a static file and your
-        GitHub account.
+        Hand it a <b>.rs</b> file, a cargo project, or the name of a public repository.
+        It compiles on GitHub's own runners &mdash; in <b>your</b> account, on <b>your</b>
+        quota, under <b>GitHub's</b> limits &mdash; and hands back a binary for any of eleven
+        targets. <b>Thermite has no application server</b>: no backend, no database, no queue
+        you are sharing. There is nothing here but a static file and your GitHub account.
       </p>
 
       <div class="hero__facts">
@@ -82,6 +82,7 @@
         <span>stable, beta, nightly, or any pinned version</span>
         <span>live logs, straight from the runner</span>
         <span>everything swept after 24 hours</span>
+        <span>your Actions minutes, your GitHub limits</span>
       </div>
 
       <div class="hero__cta">
@@ -191,6 +192,7 @@
       <div class="modeswap" role="group" aria-label="Submission type">
         <button id="mode-single" aria-pressed="true">Single .rs file</button>
         <button id="mode-cargo" aria-pressed="false">Cargo project .zip</button>
+        <button id="mode-repo" aria-pressed="false">From a GitHub repo</button>
       </div>
 
       <div class="drop" id="drop" tabindex="0" role="button"
@@ -200,8 +202,50 @@
       </div>
       <input type="file" id="file-input" class="sr-only" accept=".rs">
 
-      <div id="source-problem"></div>
-      <div id="source-card"></div>
+      <!-- upload modes -->
+      <div id="upload-pane">
+        <div id="source-problem"></div>
+        <div id="source-card"></div>
+      </div>
+
+      <!-- repository mode -->
+      <div id="repo-pane" class="hidden">
+        <p class="muted" style="margin-top:18px;max-width:66ch">
+          Nothing is uploaded. The runner clones the repository itself at build time,
+          so a large project costs one commit instead of a 12&nbsp;MiB archive.
+          <b>Public repositories only</b> &mdash; the fetch on the runner is anonymous.
+        </p>
+
+        <div class="repopick">
+          <div class="repopick__tabs" role="group" aria-label="How to choose a repository">
+            <button id="repo-tab-mine" aria-pressed="true">My repositories</button>
+            <button id="repo-tab-any" aria-pressed="false">owner/repository</button>
+          </div>
+
+          <div id="repo-mine">
+            <div class="repopick__row">
+              <label class="ack" style="padding:0">
+                <input type="checkbox" id="repo-rust-only" checked>
+                <span>Only repositories GitHub reports as Rust</span>
+              </label>
+              <div style="flex:1"></div>
+              <button class="btn btn--ghost btn--small" id="repo-refresh">Refresh</button>
+            </div>
+            <div id="repo-list" class="repolist"></div>
+          </div>
+
+          <div id="repo-any" class="hidden">
+            <div class="keyrow" style="margin-top:14px">
+              <input class="field" id="repo-input" placeholder="rust-lang/rustlings"
+                     autocomplete="off" spellcheck="false" aria-label="owner/repository">
+              <button class="btn" id="repo-lookup">Look it up</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="repo-chosen"></div>
+        <div id="repo-problem"></div>
+      </div>
 
       <div style="margin-top:28px">
         <button class="btn" data-goto="seal" id="source-next" disabled>Continue</button>
@@ -318,7 +362,8 @@
       <div class="ignite">
         <button class="btn" id="pour-btn">Pour</button>
         <p class="ignite__note" id="pour-note">
-          Uses your GitHub Actions minutes. Public repositories are unmetered.
+          Runs on your GitHub account, against your Actions usage and GitHub&rsquo;s own
+          limits. Thermite caps you at 12 pours an hour on top of that.
         </p>
       </div>
       <div id="pour-problem"></div>
@@ -345,7 +390,7 @@
           <dt>Cleanup</dt>
           <dd>A scheduled workflow sweeps pours after 24 hours, and checks the Actions API first so a build that is still running is never touched.</dd>
           <dt>What it costs</dt>
-          <dd>Nothing, and no one else's quota. Actions minutes on public repositories are unmetered. Thermite caps you at 12 pours an hour so a stuck loop cannot run away.</dd>
+          <dd>No one else&rsquo;s quota &mdash; every build runs on your account, under GitHub&rsquo;s Actions limits and policies, which are theirs to change. Public repositories are not billed per minute today, but that is not a promise of unlimited compute, and concurrency caps and fair-use rules still apply. Thermite adds its own cap of 12 pours an hour so a stuck loop cannot run away with it.</dd>
         </dl>
       </div>
     </div>

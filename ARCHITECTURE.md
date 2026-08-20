@@ -381,8 +381,8 @@ This is the sharper problem, because `cargo build` executes arbitrary user code:
 
 ## 15. GitHub Actions limits that matter
 
-- **Free tier, public repository: Actions minutes are unmetered** — which is the entire economic reason the crucible repo is public. Private would burn the user's 2 000 min/month in a few dozen builds.
-- **Not unlimited, though:** 20 concurrent jobs and 5 macOS jobs per free account; a 6 h job cap (Thermite uses 25 min); 500 workflow runs per 10 s across a repo; API-created runs subject to the same 1 000 req/hr/repo Actions API budget. Thermite's 12/hr + 3-in-flight caps sit far below all of these.
+- **Public repositories are not billed per minute**, which is the entire economic reason the crucible is public: a private one would draw down the user's included allowance in a few dozen builds. That is a *billing* difference and nothing more. It is not a promise of unlimited compute, and the interface must not imply one — GitHub's limits and policies still apply, and they are GitHub's to change.
+- **The limits that still bind:** 20 concurrent jobs and 5 macOS jobs per free account; a 6 h job cap (Thermite uses 25 min); 500 workflow runs per 10 s across a repo; API-created runs subject to the same 1 000 req/hr/repo Actions API budget. Thermite's 12/hr + 3-in-flight caps sit far below all of these.
 - **Artifacts:** default 90-day retention, set to 7 here; 500 MB free storage per account for artifacts — another reason the release asset is the primary download path, since release storage is unlimited for public repos.
 - **Scheduled workflows** are best-effort, can be delayed at peak, and are **disabled automatically after 60 days of repository inactivity**. Thermite handles this: the client checks `GET /actions/workflows/cleanup.yml` on load and, if `state == "disabled_inactivity"`, tells the user and offers a one-click re-enable (`PUT /actions/workflows/{id}/enable` — the only write to the Actions API, and it is opt-in and explicit, which is why the base token needs only `Actions: read`).
 - **Logs** are retained 90 days; the crucible-logs copy outlives that.
@@ -1238,3 +1238,97 @@ machine shows as `BUILDING` here.
 
 The cache is keyed by account, so signing in as someone else shows their pours
 and not the previous account's.
+
+---
+
+## 39. Naming a repository instead of uploading one
+
+A pour either **carries** its source or **names** it. Naming is the third source
+mode, and it is not an upload path with the upload skipped — it inverts where
+the source lives.
+
+```
+uploaded          browser reads → commits into the crucible → runner compiles it
+named             browser commits a manifest → runner clones the repo → compiles it
+```
+
+**The pour commit holds a manifest and nothing else.** `detect.mjs` enforces
+that: a job directory that declares `source.kind === "repo"` and also carries
+files is refused. So a 400 MB workspace costs one commit, there is no 12 MiB
+ceiling, no zipping, and the source is never copied into the crucible.
+
+The manifest gains one key:
+
+```json
+"source": { "kind": "repo", "owner": "rust-lang", "repo": "rustlings",
+            "ref": "main", "subdir": "crates/foo" }
+```
+
+### Validated twice, before git sees any of it
+
+Everything in `source` ends up in a URL and a filesystem path, so it is checked
+in `detect.mjs` and again in `fetch.mjs`: owner against GitHub's own name shape,
+repo against its character set, ref against a git-safe pattern with no `..`
+segment, and subdir with the same rules as every other path in the system plus a
+`resolve()` containment check against the clone root. Injection attempts —
+`a;rm -rf /`, `../../evil`, `/etc/passwd`, `main;whoami` — are refused before
+`git` is invoked at all, and `execFileSync` is used rather than a shell, so there
+is no second line of defence to need.
+
+### Public only, and why that is not laziness
+
+The clone is an **anonymous** HTTPS fetch. The only credential on the runner is a
+`GITHUB_TOKEN` scoped to the crucible, and it is deliberately absent from the
+fetch step's environment.
+
+Making private repositories work would mean giving the build a credential that
+can read them — and the build is running untrusted code by definition (§30). A
+token that can reach the user's private repositories, present on a machine
+executing an arbitrary `build.rs`, is a far worse trade than the convenience is
+worth. So it is refused, and the message says why rather than reporting a bare
+failure. Upload the project instead; use an encrypted pour if it must not sit in
+the open.
+
+### Source encryption is refused, not ignored
+
+Sealing a source that is already a public repository protects nothing. Both the
+client and `detect.mjs` refuse the combination outright rather than accepting it
+and quietly doing less than the interface implies. Artifact encryption still
+applies in full: the ingot and the build log are sealed for the user's key.
+
+### Choosing, in the interface
+
+- **The user's own repositories**, from `GET /user/repos?sort=pushed`, filtered
+  on GitHub's reported `language === 'Rust'`. That is a real filter — the same
+  one github.com shows — but it is a *dominant* language, so a Rust crate inside
+  a mostly-TypeScript repository will not appear. The filter is a toggle and the
+  interface says why, rather than pretending the repository does not exist.
+  Private repositories are listed but disabled, with the reason on hover.
+- **`owner/repository` typed by hand**, accepting a full GitHub URL and trimming
+  it. A 404 and a private repository are reported as the same thing, because
+  from an unauthorised position they are indistinguishable — and the message
+  covers both.
+- **The build root**, chosen two ways. `GET /git/trees/{ref}?recursive=1` is one
+  request that finds every `Cargo.toml` in the repository, offered as one-click
+  chips with `target/`, `vendor/` and `node_modules/` filtered out. That endpoint
+  truncates on very large repositories, so when it does the interface says so
+  and falls back to the navigator rather than implying the repository has no
+  crates. The navigator walks one level at a time through the contents API, marks
+  folders that are known crates, and always offers the repository root.
+- **The verdict is computed, not guessed.** A folder with a `Cargo.toml` is a
+  cargo build; a folder with exactly one `.rs` file and no `Cargo.toml` is a
+  rustc build; anything else is refused *before* the pour, with the reason. The
+  same determination is made again on the runner, against the real clone.
+
+### On the runner
+
+`fetch.mjs` runs before the compile step, with `GITHUB_TOKEN` explicitly emptied.
+It clones shallow — `--depth 1 --no-tags --single-branch` — supporting a branch,
+a tag, or a pinned 40-hex commit via `fetch` + `FETCH_HEAD`. It deletes `.git`,
+moves the chosen subdirectory into `jobs/<id>/source/`, and enforces file count,
+per-file and total size ceilings. It hands the resolved entrypoint over as
+`THERMITE_ENTRY_UNSEALED` — the same channel `unseal.mjs` uses, and for the same
+reason (§35: job-level `env:` beats `GITHUB_ENV`).
+
+The working tree is removed in an `if: always()` step. As with the sealed-source
+case, that is best effort; the actual assurance is that the runner is destroyed.
