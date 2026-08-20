@@ -5,10 +5,11 @@
  * a stack of cards.
  */
 
-/* The content sits ABOVE the spine (z-index 5) so the channel runs behind each
-   panel. Horizontal placement is derived from the curve: --card-x is written by
-   the spine engine per station, so a card always sits where the line is at that
-   depth rather than in a fixed column. */
+/* Cards ride ON the thread. --card-x and --card-w are written by the spine
+   engine so every station is centred on wherever the curve is at its own depth;
+   the solid line runs behind the panel (z 5) and a ghost of it runs in front
+   (z 11), which is what makes the thread read as passing THROUGH the card
+   rather than simply disappearing under it. */
 
 #descent {
   position: relative; z-index: 10;
@@ -22,30 +23,53 @@
 }
 
 .station__inner {
-  width: min(640px, calc(100vw - 48px));
-  margin-left: var(--card-x, 30px);
+  width: var(--card-w, min(600px, calc(100vw - 48px)));
+  margin-left: var(--card-x, 24px);
   padding: clamp(22px, 2.6vw, 40px);
   border: 1px solid var(--rule);
+  position: relative;
   border-radius: var(--r-lg);
-  background: linear-gradient(180deg, rgba(18, 21, 26, .93), rgba(13, 15, 19, .88));
+  /* Not fully opaque: the ghosted thread has to be visible through it. */
+  background: linear-gradient(180deg, rgba(18, 21, 26, .90), rgba(13, 15, 19, .86));
   box-shadow: 0 34px 90px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 255, 255, .03);
   backdrop-filter: blur(7px);
   opacity: 0;
   transform: translateY(38px);
   transition: opacity .7s var(--ease), transform .7s var(--ease),
-              filter .7s var(--ease), margin-left .5s var(--ease),
-              border-color .5s var(--ease);
+              filter .7s var(--ease), margin-left .55s var(--ease),
+              width .55s var(--ease), border-color .5s var(--ease);
   filter: blur(6px);
+}
+
+/* The panel leans a degree or so into whichever way the thread is bending, so
+   it reads as hung on the line rather than parked next to it. --drift is the
+   signed distance from the card's centre to the thread, normalised. */
+.station[data-visible='true'] .station__inner {
+  transform: rotate(calc(var(--drift, 0) * 0.5deg));
 }
 
 /* The edge the channel enters gets the heat, so it reads as a tap off the
    line rather than a card that happens to overlap it. */
-.station[data-side='right'] .station__inner { border-left: 2px solid var(--oxide); }
-.station[data-side='left'] .station__inner { border-right: 2px solid var(--oxide); }
-.station[data-visible='true'][data-side='right'] .station__inner { border-left-color: var(--ember); }
-.station[data-visible='true'][data-side='left'] .station__inner { border-right-color: var(--ember); }
-.station[data-locked='true'][data-side='right'] .station__inner { border-left-color: var(--rule); }
-.station[data-locked='true'][data-side='left'] .station__inner { border-right-color: var(--rule); }
+/* Where the thread enters and leaves the panel, top and bottom, the edge is
+   hot — the card is a bead on the line, not a box beside it. */
+.station__inner::before,
+.station__inner::after {
+  content: ''; position: absolute; left: 50%; width: 74px; height: 2px;
+  margin-left: -37px; border-radius: var(--r-pill);
+  background: linear-gradient(90deg, transparent, var(--oxide), transparent);
+  transition: background .6s var(--ease), width .6s var(--ease);
+}
+.station__inner::before { top: -1px; }
+.station__inner::after { bottom: -1px; }
+.station[data-visible='true'] .station__inner::before,
+.station[data-visible='true'] .station__inner::after {
+  width: 120px; margin-left: -60px;
+  background: linear-gradient(90deg, transparent, var(--ember), transparent);
+}
+.station[data-locked='true'] .station__inner::before,
+.station[data-locked='true'] .station__inner::after {
+  background: linear-gradient(90deg, transparent, var(--rule), transparent);
+}
 .station[data-visible='true'] .station__inner { opacity: 1; transform: none; filter: none; }
 .station[data-visible='past'] .station__inner { opacity: .28; transform: translateY(-18px); filter: blur(2px); }
 
@@ -61,7 +85,7 @@
 .station[data-locked='true'] .station__lock { display: block; }
 
 .station__num {
-  margin: 0 0 12px var(--card-x, 30px);
+  margin: 0 0 12px var(--card-x, 24px);
   font-family: var(--mono); font-size: 10.5px; color: var(--rule);
   letter-spacing: .22em; text-transform: uppercase;
   opacity: 0; transform: translateY(10px);
@@ -74,11 +98,16 @@
 /* --- hero -------------------------------------------------------------- */
 
 #s-intro { min-height: 100dvh; }
+/* The hero is the one station that is not a bead on the line — the thread
+   starts here, so it runs past an open composition instead of through a panel. */
 #s-intro .station__inner {
-  width: min(900px, calc(100vw - 48px));
+  width: min(880px, calc(100vw - 48px));
   padding: 0; border: 0; background: none;
   box-shadow: none; backdrop-filter: none;
+  transform: none;
 }
+#s-intro .station__inner::before,
+#s-intro .station__inner::after { display: none; }
 #s-intro .station__num { display: none; }
 
 .reaction {
@@ -338,8 +367,8 @@
 .ignite__note { font-size: 12.5px; color: var(--scale); max-width: 42ch; }
 
 @media (max-width: 900px) {
-  .station__inner { width: calc(100vw - 40px); }
-  #s-intro .station__inner { width: calc(100vw - 40px); }
+  .station__inner { width: var(--card-w, calc(100vw - 32px)); }
+  #s-intro .station__inner { width: var(--card-w, calc(100vw - 32px)); }
 }
 
 @media (max-width: 720px) {

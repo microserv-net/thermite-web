@@ -248,9 +248,34 @@ a:hover { color: var(--whitehot); }
    makes the channel disappear behind a station panel and re-emerge past it. */
 
 #spine {
-  position: fixed; inset: 0; z-index: 5;
+  position: fixed; inset: 0; z-index: 5;      /* below the stations */
   pointer-events: none;
   overflow: visible;
+}
+
+/* The same thread, ghosted, ABOVE the content. Without this the line simply
+   vanishes behind a panel; with it, you can see it running underneath, which
+   is what makes the descent read as travelling along one continuous thread. */
+#spine-ghost {
+  position: fixed; inset: 0; z-index: 11;     /* above the stations */
+  pointer-events: none;
+  overflow: visible;
+  mix-blend-mode: screen;
+}
+.spine__ghost {
+  fill: none; stroke: #6f7b8c; stroke-width: 2;
+  stroke-linecap: round; opacity: .16;
+}
+.spine__ghost-hot {
+  fill: none; stroke: var(--ember); stroke-width: 2.5;
+  stroke-linecap: round; opacity: .22;
+  filter: blur(1.5px);
+}
+
+/* Outer strands: the thread braids and separates as it descends. */
+.spine__strand {
+  fill: none; stroke: var(--ash); stroke-width: 1;
+  stroke-linecap: round; opacity: .5;
 }
 
 .spine__channel {
@@ -258,7 +283,7 @@ a:hover { color: var(--whitehot); }
   stroke-linecap: round;
 }
 .spine__molten {
-  fill: none; stroke-width: 3;
+  fill: none; stroke-width: 3.5;
   stroke-linecap: round;
   filter: drop-shadow(0 0 9px rgba(255, 95, 31, .45));
 }
@@ -307,9 +332,15 @@ a:hover { color: var(--whitehot); }
 .spine__node:focus-visible .node__ring { stroke: var(--pour); }
 .spine__node:focus { outline: none; }
 
-body[data-mode='furnace'] #spine,
-body[data-mode='manual'] #spine,
-body[data-mode='terms'] #spine { opacity: 0; transition: opacity .3s var(--ease); }
+body[data-mode='furnace'] #spine, body[data-mode='furnace'] #spine-ghost,
+body[data-mode='manual'] #spine,  body[data-mode='manual'] #spine-ghost,
+body[data-mode='terms'] #spine,   body[data-mode='terms'] #spine-ghost {
+  opacity: 0; transition: opacity .3s var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spine__crest, .spine__head { display: none; }
+}
 
 /* --- utility ----------------------------------------------------------- */
 
