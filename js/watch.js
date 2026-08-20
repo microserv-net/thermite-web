@@ -28,20 +28,101 @@ export const STATUS = {
 };
 
 // ------------------------------------------------------------ local store ---
-// Non-sensitive pour metadata only, so history survives a reload. Everything
-// authoritative is re-read from GitHub; this is just the index.
+// Non-sensitive pour metadata, so a returning visit has something to show
+// immediately. It is a CACHE, not the record: the crucible is the record, and
+// discoverPours() below rebuilds the list from it.
 
-export function loadPours() {
-  try { return JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return []; }
+/** @param {string} [login] restrict to one account. Omit for every account. */
+export function loadPours(login) {
+  let all;
+  try { all = JSON.parse(localStorage.getItem(STORE) || '[]'); } catch { return []; }
+  if (!Array.isArray(all)) return [];
+  return login ? all.filter((p) => p.login === login) : all;
 }
 
 export function savePour(p) {
   const all = loadPours().filter((x) => x.id !== p.id);
   all.unshift({ ...p, savedAt: Date.now() });
-  try { localStorage.setItem(STORE, JSON.stringify(all.slice(0, 100))); } catch {}
+  try { localStorage.setItem(STORE, JSON.stringify(all.slice(0, 200))); } catch {}
 }
 
-export function forgetPours() { try { localStorage.removeItem(STORE); } catch {} }
+/** @param {string} [login] forget one account's pours, or all of them. */
+export function forgetPours(login) {
+  if (!login) { try { localStorage.removeItem(STORE); } catch {} return; }
+  const keep = loadPours().filter((p) => p.login !== login);
+  try { localStorage.setItem(STORE, JSON.stringify(keep)); } catch {}
+}
+
+/**
+ * Rebuild the pour list from the crucible itself.
+ *
+ * The browser's copy is only ever a cache. Clear site data, switch machines,
+ * open a different browser, or hit a glitch mid-session and localStorage knows
+ * nothing — while the pours are still sitting in the repository, still building,
+ * still holding their ingots. The ledger has to be able to say so.
+ *
+ * The trick is that the commit message already carries everything needed:
+ *
+ *     pour 01JQ8Z4K7T3M9V2B6X1Y5R8W0C · 1.89.0 · x86_64-unknown-linux-gnu
+ *
+ * so one call to the commits endpoint recovers the id, the commit SHA (which is
+ * what run lookup is keyed on), the toolchain, the target and the submission
+ * time — for every pour, including ones whose job directory has already been
+ * swept, because Git keeps the commit either way.
+ */
+export async function discoverPours(login, { max = 50 } = {}) {
+  const out = [];
+  let commits;
+  try {
+    commits = await gh.get(`/repos/${login}/${NAME}/commits?per_page=100`, { etag: true });
+  } catch (e) {
+    if (e.status === 404 || e.status === 409) return out;   // no crucible, or empty
+    throw e;
+  }
+
+  for (const c of commits || []) {
+    const line = (c.commit?.message || '').split('\n')[0];
+    const m = /^pour ([0-9A-HJKMNP-TV-Z]{26})(?:\s+\u00b7\s+(\S+)\s+\u00b7\s+(\S+))?/.exec(line);
+    if (!m) continue;
+    out.push({
+      id: m[1],
+      commitSha: c.sha,
+      login,
+      toolchain: m[2] || null,
+      target: m[3] || null,
+      submittedAt: c.commit?.committer?.date || c.commit?.author?.date || null,
+      recovered: true,
+    });
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/**
+ * The crucible's list, merged over the browser's. Local records are richer —
+ * they know the project name, whether it was sealed, and its cleanup policy —
+ * so they win on the fields they have; discovery fills in everything the
+ * browser never knew about.
+ */
+export async function allPours(login) {
+  const local = loadPours(login);
+  const localIds = new Set(local.map((p) => p.id));
+
+  let discovered = [];
+  try { discovered = await discoverPours(login); }
+  catch { /* offline or unreadable: the cache is still better than nothing */ }
+
+  const merged = new Map();
+  for (const p of discovered) merged.set(p.id, p);
+  for (const p of local) merged.set(p.id, { ...(merged.get(p.id) || {}), ...p, recovered: false });
+
+  // Remember what was recovered, so the next visit does not have to rediscover
+  // it and a deep link to an old pour resolves.
+  for (const p of discovered) if (!localIds.has(p.id)) savePour(p);
+
+  // ULIDs are lexicographically chronological, so this is newest-first.
+  return [...merged.values()].sort((a, b) => (a.id < b.id ? 1 : -1));
+}
 
 // ---------------------------------------------------------------- watcher ---
 
@@ -65,6 +146,7 @@ export class PourWatcher extends EventTarget {
       meta: null,
       artifact: null,
       download: null,
+      ingotMissing: false,     // succeeded, but the release is gone (swept, or deleted)
       releaseUrl: null,
       error: null,
       logStreamLost: false,
@@ -109,9 +191,16 @@ export class PourWatcher extends EventTarget {
       this.emit();
 
       if (this.isTerminal()) {
-        // Two more passes after completion: the release asset and the artifact
-        // record both land a moment after the run reports done.
-        if (++this._misses > 3) break;
+        // A few more passes after completion: the release asset and the
+        // artifact record both land a moment after the run reports done.
+        if (++this._misses > 3) {
+          // Succeeded, but nothing to hand over. Almost always a pour that has
+          // already been cleaned up — the run record outlives its artifacts.
+          if (this.state.status === 'SUCCESS' && !this.state.download && !this.state.artifact) {
+            this.state.ingotMissing = true;
+          }
+          break;
+        }
       }
 
       if (budget.remaining != null && budget.remaining < POLL.budgetStop && !this.isTerminal()) {

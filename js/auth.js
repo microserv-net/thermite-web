@@ -16,14 +16,56 @@
 // storage in either case.
 
 import { OAUTH } from './config.js';
-import { gh, ApiError } from './github.js';
-import { sleep } from './util.js';
+import { gh, ApiError, onAuthFailure } from './github.js';
+import { sleep, el } from './util.js';
 
 const SESSION_KEY = 'thermite.key';
+const LOGIN_KEY = 'thermite.login';
 const DB = 'thermite';
 const STORE = 'vault';
 
 export const deviceFlowAvailable = () => !!(OAUTH.RELAY_URL && OAUTH.CLIENT_ID);
+
+// ------------------------------------------------- credential expiry -------
+// A fine-grained token expires on a date the user chose, and can be revoked at
+// any moment. When that happens mid-session every call starts returning 401.
+// Announcing it once, plainly, beats a stream of identical failures — and the
+// in-flight state is dropped so nothing keeps polling with a dead key.
+
+onAuthFailure(() => {
+  if (!session.token) return;
+  const who = session.user?.login;
+  gh.setToken(null);
+  session.user = null; session.token = null; session.mode = null;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch {}
+  watchers.forEach((f) => { try { f(session); } catch {} });
+
+  if (document.getElementById('auth-lapsed')) return;
+  document.body.prepend(el('div', {
+    id: 'auth-lapsed', role: 'alert',
+    style: [
+      'position:fixed', 'inset:0 0 auto 0', 'z-index:400',
+      'background:#1a0d0b', 'border-bottom:2px solid var(--fault)',
+      'color:var(--steel)', 'padding:14px clamp(16px,3vw,28px)',
+      'font-family:var(--body)', 'font-size:13.5px',
+      'display:flex', 'gap:14px', 'align-items:center', 'flex-wrap:wrap',
+    ].join(';'),
+  },
+    el('b', {
+      style: 'font-family:var(--mono);font-size:11px;letter-spacing:.16em;' +
+             'text-transform:uppercase;color:var(--fault)',
+      text: 'Forge key no longer valid',
+    }),
+    el('span', {
+      text: `GitHub rejected the key${who ? ` for ${who}` : ''} — it has expired or been revoked. ` +
+            'Builds already running on GitHub are unaffected and will finish; sign in again to watch them.',
+    }),
+    el('button', {
+      class: 'btn btn--ghost btn--small', type: 'button', text: 'Sign in again',
+      onclick: () => location.reload(),
+    }),
+  ));
+});
 
 // --------------------------------------------------------------- vault ------
 
@@ -137,10 +179,26 @@ export async function adopt(token, mode = 'key') {
     throw e;
   }
 
+  // Switching accounts without signing out first would leave the previous
+  // account's crucible, key state and cached repository in memory. The token is
+  // stored first, so the reload comes back signed in as the new account with
+  // nothing of the old one carried over.
+  let previous = null;
+  try { previous = sessionStorage.getItem(LOGIN_KEY); } catch {}
+
   session.user = user;
   session.token = clean;
   session.mode = mode;
-  try { sessionStorage.setItem(SESSION_KEY, clean); } catch { /* private mode */ }
+  try {
+    sessionStorage.setItem(SESSION_KEY, clean);
+    sessionStorage.setItem(LOGIN_KEY, user.login);
+  } catch { /* private mode */ }
+
+  if (previous && previous !== user.login) {
+    location.reload();
+    return user;
+  }
+
   announce();
   return user;
 }
@@ -155,7 +213,12 @@ export async function restore() {
 export async function signOut() {
   gh.setToken(null);
   session.user = null; session.token = null; session.mode = null;
-  sessionStorage.removeItem(SESSION_KEY);
+  try {
+    sessionStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(LOGIN_KEY);
+  } catch {}
+  // The pour cache is keyed by account and deliberately left alone: signing out
+  // is not the same as forgetting what you built. Decommissioning clears it.
   announce();
 }
 

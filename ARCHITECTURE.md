@@ -1144,3 +1144,97 @@ After changing anything under `build-repo-template/`, run
 `TEMPLATE_REVISION`, which is what causes existing crucibles to be offered a
 re-lining — without it, users keep running the old scripts on the runner no
 matter what the site says.
+
+---
+
+## 37. Failure matrix
+
+Every row is a thing that actually happens. Where the answer was "nothing", it
+now isn't.
+
+### Concurrency and identity
+
+| Scenario | Behaviour |
+| --- | --- |
+| **Two simultaneous uploads** | Each pour is one commit. `PATCH /git/refs` with `force:false` is a compare-and-swap, so the loser gets `422 not a fast forward`, re-reads the ref and rebuilds on the new parent. Both land, as two commits and two runs. Bounded retry with jitter, max 5. |
+| **Two browser tabs** | Independent: the token is in `sessionStorage`, which is per-tab. Submission races resolve as above. The hourly throttle lives in `localStorage`, so it is shared across tabs rather than doubled. |
+| **Same account, two machines** | No shared client state at all. The crucible is the only rendezvous, and Git's own locking arbitrates it. Each machine's ledger discovers the other's pours (§below). |
+| **Different accounts** | Different repositories, different quotas, nothing shared. Within one browser, `sessionStorage` keys the token per tab and the pour cache is filtered by `login`. |
+| **User switches GitHub accounts** | `adopt()` compares the new login against the previous one and reloads if it changed — after storing the new token, so the reload comes back as the new account with no crucible, key state or cached repository carried over. Signing out clears the session but deliberately keeps the pour cache: signing out is not the same as forgetting what you built. |
+| **User closes the browser mid-build** | The build is on GitHub and finishes regardless. On return the ledger shows it, live. |
+
+### Provisioning and the network
+
+| Scenario | Behaviour |
+| --- | --- |
+| **Repo creation interrupted** | Provisioning is idempotent and runs on every visit, keyed on whether the workflows are actually present rather than on whether the repo was just created (§2). A half-made crucible finishes on the next load instead of becoming permanent. |
+| **Half-completed provisioning** | Same mechanism. The seed step, the log branch and the Actions policy each check before acting; the failure is reported with the specific permission that is missing. |
+| **Network dies mid-upload** | Blobs are content-addressed and orphaned blobs are garbage-collected by GitHub — they are not a job. A pour exists only once the ref update lands, so a broken upload leaves no partial job and no run. |
+| **GitHub API 409** | Expected in two places and handled in both: an empty repository on `GET /git/ref`, and a ref that moved during a write. Neither is treated as an error. |
+| **GitHub API 403** | Distinguished by cause. Primary rate limit → wait until `x-ratelimit-reset`. Secondary limit → honour `retry-after` exactly. Permission → surfaced with the name of the missing permission, not a bare 403. |
+| **Token expires or is revoked mid-session** | The first 401 while holding a token clears the session, stops every poller, and shows one banner naming the account — instead of a wall of identical failures. It says explicitly that builds already running on GitHub are unaffected. |
+
+### The build
+
+| Scenario | Behaviour |
+| --- | --- |
+| **Workflow queued for 10 minutes** | `QUEUED`, honestly, for as long as it takes. Polling backs off when the rate-limit budget thins and pauses below 300 remaining. If no run is *ever* created, after ~2 minutes the state becomes `UNKNOWN` with the two likely causes named. |
+| **Runner dies** | The run concludes `failure`, `cancelled` or `timed_out` and the UI reflects the real conclusion. The `if: always()` log-close step still flushes what was captured. |
+| **Build fails** | No release, no artifact, no placeholder. The log is published, the failing step named, and `cargo`'s diagnostics parsed into file/line/column/code. Failed pours are kept by default because their logs are the point. |
+| **Cleanup happens while queued** | It cannot. Both the scheduled sweep and every manual path resolve the pour's triggering commit, read all runs for that SHA fresh, and proceed only if **every** run is `completed`. Manual cleanup re-classifies immediately before deleting, so a build that started while the dialog was open is still safe. |
+| **Cleanup cannot reach the API** | Fail closed. "I could not check" is never collapsed into "it must be finished"; the pour is reported as *unverifiable* and excluded from the eligible count. |
+| **Artifact expires** | `expires_at` and `expired` come from GitHub and are shown as they are. The state becomes `EXPIRED` rather than offering a dead download. |
+| **Release disappears** | A succeeded pour with no release and no artifact resolves to `ingotMissing` after the post-completion polls, and says so: cleanup removes releases about 24 hours after a pour, while GitHub keeps the run record longer. It offers the run, not a spinner. |
+
+### Untrusted input
+
+| Scenario | Behaviour |
+| --- | --- |
+| **Malicious Cargo project** | Not contained, and never claimed to be (§30). Bounded by: GitHub-owned actions only, `contents: write` and nothing else, no secrets in the repo, a `GITHUB_TOKEN` that cannot modify workflows, a separate unprivileged user on Linux, and a 25-minute cap. The blast radius is one disposable public repo belonging to whoever submitted the code. |
+| **Malicious `build.rs`** | Same. Explicitly documented in the crucible's README and in the terms, including the residual risk on Windows and macOS runners where the uid boundary does not exist. |
+| **Corrupt ZIP** | The reader validates the EOCD, the central directory, each local header, the compression method, and each entry's inflated length against its declared size. Every failure names what is wrong with the archive. |
+| **ZIP bomb** | The inflated total is checked **during** inflation, not after, and per-file and total ceilings both apply. Entry count is checked against the declared directory size before a single byte is inflated. |
+| **Path traversal** | Impossible by construction: the archive is never extracted to a filesystem, entries become Git tree path strings. Checked anyway — absolute paths, `..`, backslashes, control characters, symlinks, `.github/` — at the client, again in `detect.mjs`, and a third time in `unseal.mjs` for content that was ciphertext at commit time and could not be inspected earlier. |
+
+### Drift
+
+| Scenario | Behaviour |
+| --- | --- |
+| **Manually modified crucible** | `detect.mjs` refuses any commit that touches a path outside the one job directory it is building, and accepts only *added* manifests. Editing an old manifest does not re-run it. Re-lining restores every workflow and script in one commit. |
+| **Old workflow version** | `.thermite-revision` holds the hash of the template that lined the repo. A mismatch surfaces on the connect station with a one-click **re-line**. This is the only route by which fixes to the runner scripts reach existing users. |
+| **Scheduled sweep disabled after 60 days idle** | Detected via the workflow's `disabled_inactivity` state, with an explicit opt-in re-enable. |
+
+---
+
+## 38. Where the pour history actually lives
+
+**The crucible is the record. The browser is a cache.** That distinction was
+wrong for a while and it produced exactly the failure you would expect: a pour
+that ran and succeeded, sitting in the repository with its release intact, while
+the ledger said *nothing poured yet* — because `localStorage` had been cleared,
+or the browser had changed, or a glitch mid-session lost it.
+
+The fix rests on something the design already had. Every pour commit is written
+as:
+
+```
+pour 01JQ8Z4K7T3M9V2B6X1Y5R8W0C · 1.89.0 · x86_64-unknown-linux-gnu
+```
+
+so **one** call to `GET /repos/{o}/{r}/commits?per_page=100` recovers, for every
+pour: the id, the commit SHA — which is the key run lookup is done on — the
+toolchain, the target and the submission time. It works for pours whose job
+directory has already been swept, because Git keeps the commit either way.
+
+`allPours(login)` merges that over the local cache. Local records win on the
+fields they have, because they know things the commit message does not: the
+project name, whether it was sealed, its cleanup policy. Discovery fills in
+everything this browser never knew. Anything recovered is written back to the
+cache, so the next visit is instant and a deep link to an old pour resolves.
+
+Rows recovered this way are labelled *recovered from your crucible*, and they
+rehydrate to live status like any other — a build still running on another
+machine shows as `BUILDING` here.
+
+The cache is keyed by account, so signing in as someone else shows their pours
+and not the previous account's.

@@ -7,7 +7,10 @@ import { readZip, inspectProject, ZipError, pathProblem } from './unzip.js';
 import { provision, findCrucible, inspect, reline, wakeSweep, TEMPLATE_REVISION } from './provision.js';
 import { submit, throttleCheck } from './submit.js';
 import { PourWatcher, STATUS, STAGES, savePour, loadPours, forgetPours, diagnosticsFrom } from './watch.js';
-import { $, $$, el, esc, bytes, duration, ago, reducedMotion, enc } from './util.js';
+import {
+  $, $$, el, esc, bytes, duration, ago, reducedMotion, enc,
+  cryptoAvailable, warnIfInsecureContext,
+} from './util.js';
 import { Deck } from './ui/fx.js';
 import { Descent } from './ui/scroll.js';
 import { Crucible } from './ui/crucible.js';
@@ -537,6 +540,16 @@ function gatePour() {
   const acked = consent.state().accepted;
   const btn = $('#pour-btn');
   const sealBlocked = S.sealOn && !(keys.readiness(S.keyState || {}, { source: true, artifact: true }).ok);
+
+  // Web Crypto is required for a SEALED pour only. A plain one drops its tamper
+  // hash and builds normally — see util.treeHash.
+  if (!cryptoAvailable() && S.sealOn) {
+    btn.disabled = true;
+    $('#pour-note').textContent =
+      'Encrypted pours need Web Crypto, which this page has no access to. See the banner at the top.';
+    return;
+  }
+
   btn.disabled = !acked || sealBlocked;
   $('#pour-note').textContent = !acked
     ? 'Acknowledge both statements above to enable the pour.'
@@ -740,12 +753,14 @@ function paintFurnace(pour, w) {
   }
 
   if (st.status === 'SUCCESS') {
-    foot.append(el('div', { class: 'ingot' },
+    foot.append(el('div', { class: 'ingot', style: st.ingotMissing ? 'border-left-color:var(--scale)' : null },
       el('div', {},
         el('div', { class: 'ingot__t', text: st.download ? st.download.name : `thermite-${st.id}` }),
         el('div', { class: 'ingot__s', text: st.download
           ? `${bytes(st.download.bytes)} · release asset · no sign-in needed to download`
-          : 'packaging the ingot…' })),
+          : st.ingotMissing
+            ? 'This build succeeded, but its ingot is no longer in the crucible — cleanup removes releases about 24 hours after a pour. GitHub keeps the run record longer than the artifacts. Pour it again to get a fresh binary.'
+            : 'packaging the ingot…' })),
       el('div', { class: 'ingot__sp' }),
       st.fullLogUrl ? el('a', {
         class: 'btn btn--ghost btn--small', href: st.fullLogUrl,
@@ -755,7 +770,13 @@ function paintFurnace(pour, w) {
         class: 'btn btn--quench', type: 'button', id: 'retrieve-btn',
         text: st.retrieved ? 'Retrieve again' : 'Retrieve ingot',
         onclick: () => retrieveIngot(pour, st),
-      }) : el('span', { class: 'muted' }, el('span', { class: 'spinner' }), ' resolving'),
+      }) : st.ingotMissing
+        ? el('a', {
+            class: 'btn btn--ghost btn--small', target: '_blank', rel: 'noopener noreferrer',
+            href: st.run?.url || `https://github.com/${pour.login || S.login}/${APP.repoName}`,
+            text: 'Open the run',
+          })
+        : el('span', { class: 'muted' }, el('span', { class: 'spinner' }), ' resolving'),
       st.download ? el('a', {
         class: 'btn btn--ghost btn--small', href: st.download.url, download: '',
         text: 'Plain download',
@@ -1391,7 +1412,7 @@ $('#ledger-decommission').addEventListener('click', async () => {
   try {
     await cleanup.decommission(S.login, input.value.trim());
     t.remove();
-    forgetPours();
+    forgetPours(S.login);
     S.crucible = null; S.crucibleState = null; S.keyState = null; S.sealOn = false;
     keys.unloadArtifactPrivate();
     toast('Decommissioned', `${full} has been deleted. Reloading.`, 'good', 4000);
@@ -1410,7 +1431,7 @@ $('#ledger-decommission').addEventListener('click', async () => {
       if (force) {
         try {
           await cleanup.decommission(S.login, `${S.login}/${APP.repoName}`, { force: true });
-          forgetPours();
+          forgetPours(S.login);
           toast('Decommissioned', 'The crucible has been deleted. Reloading.', 'good', 4000);
           setTimeout(() => location.reload(), 1500);
         } catch (err) { toast('Could not delete it', describeError(err), 'error', 12000); }
@@ -1502,6 +1523,11 @@ addEventListener('unhandledrejection', (e) => {
   renderConsent();
   $('#reaction').classList.add('reaction--lit');
 
+  if (!warnIfInsecureContext()) {
+    $('#seal-toggle').disabled = true;
+    $('#seal-hint').textContent = 'Unavailable without a secure context';
+  }
+
   const restored = await auth.restore();
   if (restored) {
     try { await afterSignIn(); } catch (e) { toast('Reconnect needed', describeError(e), 'error'); }
@@ -1510,7 +1536,7 @@ addEventListener('unhandledrejection', (e) => {
   // Deep link: #p=<ULID> reopens a pour, from history alone.
   const m = /p=([0-9A-HJKMNP-TV-Z]{26})/.exec(location.hash);
   if (m) {
-    const pour = loadPours().find((p) => p.id === m[1]);
+    const pour = loadPours(S.login).find((p) => p.id === m[1]);
     if (pour && (S.login || pour.login)) openPour(pour);
     else if (!S.login) toast('Sign in first', 'Connect GitHub and Thermite will reopen that pour.', 'info');
     else toast('Unknown pour', 'This browser has no record of that pour id.', 'error');

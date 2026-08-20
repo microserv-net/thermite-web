@@ -50,12 +50,20 @@ export const budget = {
 const listeners = new Set();
 export const onBudget = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
 
+// A 401 mid-session means the forge key expired or was revoked. Every
+// subsequent call would fail the same way, so it is announced once rather than
+// surfacing as a wall of identical errors.
+const authListeners = new Set();
+export const onAuthFailure = (fn) => { authListeners.add(fn); return () => authListeners.delete(fn); };
+let authAnnounced = false;
+export const resetAuthFailure = () => { authAnnounced = false; };
+
 export class GitHub {
   #token = null;
   #etags = new Map();
   #cache = new Map();
 
-  setToken(t) { this.#token = t; this.#etags.clear(); this.#cache.clear(); }
+  setToken(t) { this.#token = t; this.#etags.clear(); this.#cache.clear(); resetAuthFailure(); }
   get authed() { return !!this.#token; }
 
   /**
@@ -126,6 +134,11 @@ export class GitHub {
         if (attempt === retries) throw lastErr;
         await sleep(backoff(attempt));
         continue;
+      }
+
+      if (res.status === 401 && this.#token && !authAnnounced) {
+        authAnnounced = true;
+        authListeners.forEach((f) => { try { f(); } catch { /* never block the throw */ } });
       }
 
       if (!res.ok) {
