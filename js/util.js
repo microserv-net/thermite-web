@@ -170,19 +170,67 @@ export const reducedMotion = () =>
 export function warnIfInsecureContext() {
   if (cryptoAvailable()) return true;
   if (document.getElementById('insecure-banner')) return false;
-  // Plaintext pours still work — only the sealed ones are off the table.
 
+  // Plaintext pours still work — only the sealed ones are off the table. The
+  // advice has to match the situation: telling someone on a real domain to
+  // "use localhost" is useless, and the actual fix in that case is one click.
   const host = location.hostname;
-  const advice = location.protocol === 'file:'
-    ? 'You have opened index.html directly from disk. Serve the folder instead — from the repository root, run: python3 -m http.server 8000 — then visit http://localhost:8000.'
-    : `You are on ${location.protocol}//${host}. Use http://localhost instead of the IP address, or put the site behind https. Deployed on GitHub Pages this is never an issue, because Pages is https.`;
+  const proto = location.protocol;
+  const isFile = proto === 'file:';
+  const isLoopback = host === 'localhost' || host === '127.0.0.1' ||
+    host === '::1' || host.endsWith('.localhost');
+  const isIpLiteral = /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^\[?[0-9a-f:]+\]?$/i.test(host);
+  const isNamedHost = !isFile && !isLoopback && !isIpLiteral && host.includes('.');
+
+  const httpsUrl = `https://${location.host}${location.pathname}${location.search}${location.hash}`;
+  const detail = [];
+  let action = null;
+
+  if (isFile) {
+    detail.push(
+      'You have opened index.html directly from disk, and a file:// page is never a secure ' +
+      'context. Serve the folder instead — from the repository root run ',
+      el('code', { text: 'python3 -m http.server 8000' }),
+      ' and visit http://localhost:8000.');
+  } else if (isNamedHost) {
+    // The common and easily fixed case: a real domain served over plain HTTP.
+    detail.push(
+      `${host} is served over plain HTTP. Browsers only grant Web Crypto to https — and to ` +
+      'localhost — so the fix is TLS on this domain rather than anything about how you are ' +
+      'reaching it.');
+    action = el('a', {
+      class: 'btn btn--small', href: httpsUrl,
+      style: 'margin-left:2px',
+      text: 'Try https:// instead',
+    });
+    detail.push(
+      el('div', { style: 'margin-top:8px;color:var(--scale);font-size:12.5px' },
+        'On GitHub Pages with a custom domain, turn on ',
+        el('b', { text: 'Settings \u2192 Pages \u2192 Enforce HTTPS' }),
+        ' — GitHub issues the certificate for you, though it can take a while to appear after ' +
+        'the domain is first pointed at it. Anywhere else, terminate TLS in front of the site.'));
+  } else if (isIpLiteral) {
+    detail.push(
+      `You are on ${proto}//${host}. Browsers treat localhost as a secure context but not an ` +
+      'IP address, even on the same machine. Use http://localhost with the same port, or put ' +
+      'TLS in front of it if you need to reach it from another device.');
+  } else if (isLoopback) {
+    detail.push(
+      `This is ${proto}//${host}, which a browser should treat as secure. Something is ` +
+      'withholding Web Crypto anyway — a proxy rewriting the origin, or a browser flag. ' +
+      'Opening the page directly on the machine serving it usually settles it.');
+  } else {
+    detail.push(
+      `This page is not a secure context (${proto}//${host}), so the browser is withholding ` +
+      'SubtleCrypto. Serve it over https, or from http://localhost.');
+  }
 
   const bar = el('div', {
     id: 'insecure-banner', role: 'alert',
     style: [
       'position:fixed', 'inset:0 0 auto 0', 'z-index:400',
       'background:#1a0d0b', 'border-bottom:2px solid var(--fault)',
-      'color:var(--steel)', 'padding:16px clamp(16px,3vw,28px)',
+      'color:var(--steel)', 'padding:14px clamp(16px,3vw,28px)',
       'font-family:var(--body)', 'font-size:13.5px', 'line-height:1.55',
       'box-shadow:0 18px 60px rgba(0,0,0,.6)',
     ].join(';'),
@@ -190,11 +238,19 @@ export function warnIfInsecureContext() {
     el('b', {
       style: 'display:block;font-family:var(--mono);font-size:11px;letter-spacing:.16em;' +
              'text-transform:uppercase;color:var(--fault);margin-bottom:6px',
-      text: 'Web Crypto unavailable — encrypted pours are disabled',
+      text: 'Not a secure context — encrypted pours are disabled',
     }),
-    el('span', {}, 'Plain pours still work. Encrypted pours, key generation and ' +
-      'opening a sealed ingot all need SubtleCrypto, which the browser only exposes ' +
-      'in a secure context. ' + advice),
+    el('div', { style: 'display:flex;gap:12px;align-items:baseline;flex-wrap:wrap' },
+      el('span', { style: 'flex:1 1 32ch;min-width:0' },
+        'Plain pours still work. Encrypted pours, key generation and opening a sealed ingot ' +
+        'all need SubtleCrypto, which browsers expose only in a secure context. ',
+        ...detail),
+      action,
+      el('button', {
+        class: 'btn btn--ghost btn--small', type: 'button', text: 'Dismiss',
+        onclick: () => { bar.remove(); document.body.style.paddingTop = ''; },
+      }),
+    ),
   );
 
   document.body.prepend(bar);
