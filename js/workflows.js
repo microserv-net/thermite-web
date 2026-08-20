@@ -5,7 +5,7 @@
 // compares them on every visit so an outdated crucible can be re-lined with one
 // click.
 
-export const TEMPLATE_REVISION = "30aebb0fc0da";
+export const TEMPLATE_REVISION = "e53722d7e7c1";
 
 export const TEMPLATE = {
   ".github/workflows/build.yml": `name: Thermite pour
@@ -1445,7 +1445,14 @@ else
   pipe() { tee -a "$LOG"; }
 fi
 say()  { printf '%s\\n' "$*" | pipe; }
-mark() { printf '##thermite:%s\\n' "$*" | pipe; printf '##thermite:%s\\n' "$*"; }
+# On a sealed pour \`pipe\` swallows stdout, so the marker is echoed separately to
+# keep the run legible on GitHub. On a plain pour \`pipe\` already writes to
+# stdout — echoing again is what was printing every marker twice.
+if [ "\${THERMITE_SEALED:-0}" = "1" ]; then
+  mark() { printf '##thermite:%s\\n' "$*" | pipe; printf '##thermite:%s\\n' "$*"; }
+else
+  mark() { printf '##thermite:%s\\n' "$*" | pipe; }
+fi
 
 # --------------------------------------------------------------- toolchain --
 
@@ -1495,7 +1502,11 @@ fi
 
 # ------------------------------------------------------------- uid sandbox --
 
-RUNAS=()
+# Never an empty array: Bash 3.2 (what macOS runners ship) errors on the
+# expansion of one under \`set -u\`, which is a footgun the Linux path never
+# reaches because it always fills RUNAS in. \`env\` with no options simply runs
+# the command it is given.
+RUNAS=(env)
 SANDBOXED=no
 if [ "\${THERMITE_SANDBOX}" = "uid" ] && command -v sudo >/dev/null 2>&1; then
   if id pourer >/dev/null 2>&1 || sudo -n useradd -m -s /bin/bash pourer 2>/dev/null; then
@@ -1503,6 +1514,7 @@ if [ "\${THERMITE_SANDBOX}" = "uid" ] && command -v sudo >/dev/null 2>&1; then
     sudo -n chmod -R a+rX "$HOME/.rustup" "$HOME/.cargo" 2>/dev/null || true
     sudo -n mkdir -p /home/pourer/.cargo 2>/dev/null || true
     sudo -n chown -R pourer /home/pourer "$SRC" 2>/dev/null || true
+    RUNAS=()
     RUNAS=(sudo -n -u pourer env -i
       "HOME=/home/pourer"
       "PATH=\${HOME}/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
