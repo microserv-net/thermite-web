@@ -195,15 +195,15 @@
         <button id="mode-repo" aria-pressed="false">From a GitHub repo</button>
       </div>
 
-      <div class="drop" id="drop" tabindex="0" role="button"
-           aria-label="Choose a file, or drop one here">
-        <div class="drop__big" id="drop-title">Drop a .rs file</div>
-        <div class="drop__hint" id="drop-hint">or click to browse &middot; up to 512 KiB</div>
-      </div>
-      <input type="file" id="file-input" class="sr-only" accept=".rs">
-
-      <!-- upload modes -->
+      <!-- upload modes: the drop zone belongs INSIDE the pane that gets hidden,
+           or it survives the switch to the repository tab -->
       <div id="upload-pane">
+        <div class="drop" id="drop" tabindex="0" role="button"
+             aria-label="Choose a file, or drop one here">
+          <div class="drop__big" id="drop-title">Drop a .rs file</div>
+          <div class="drop__hint" id="drop-hint">or click to browse &middot; up to 512 KiB</div>
+        </div>
+        <input type="file" id="file-input" class="sr-only" accept=".rs">
         <div id="source-problem"></div>
         <div id="source-card"></div>
       </div>

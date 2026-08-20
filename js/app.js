@@ -408,7 +408,10 @@ function setMode(mode) {
 
   if (mode === 'repo') {
     S.files = null;
+    S.projectName = S.repoInfo ? S.projectName : null;
     $('#source-card').replaceChildren();
+    problem('#source-problem', null, null);
+    $('#file-input').value = '';
     $('#source-next').disabled = !S.repoSource;
     if (S.repoSource) { descent.unlock('seal'); descent.unlock('confirm'); renderConfirm(); }
     if (!S.repoListLoaded) loadMyRepos();
@@ -670,7 +673,8 @@ async function renderNavigator() {
 
   let verdict;
   try {
-    verdict = await repos.inspectFolder(info.owner, info.name, S.repoRef, S.repoPath);
+    verdict = await repos.inspectFolder(
+      info.owner, info.name, S.repoRef, S.repoPath, S.repoCrates?.crates || null);
   } catch (e) {
     $('#repo-chosen').replaceChildren();
     problem('#repo-problem', 'Could not read that folder', describeError(e));

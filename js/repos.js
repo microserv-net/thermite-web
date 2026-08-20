@@ -108,16 +108,26 @@ export async function refsOf(owner, name) {
  * @returns {{dirs:{name,path}[], files:string[], hasCargo:boolean, rustFiles:string[]}}
  */
 export async function browse(owner, name, ref, path = '') {
+  // The repository root is `/contents`, with NO trailing slash. Building it as
+  // `/contents/${path}` and letting path be empty produces `/contents/?ref=…`,
+  // which is not the same request — and it is what made a root Cargo.toml
+  // invisible. Each segment is encoded individually, because encodeURI leaves
+  // `?` and `#` intact and a branch or folder containing either would escape
+  // the path.
+  const clean = String(path || '').replace(/^\/+|\/+$/g, '');
+  const url = clean
+    ? `/repos/${owner}/${name}/contents/${clean.split('/').map(encodeURIComponent).join('/')}` +
+      `?ref=${encodeURIComponent(ref)}`
+    : `/repos/${owner}/${name}/contents?ref=${encodeURIComponent(ref)}`;
+
   let entries;
   try {
-    entries = await gh.get(
-      `/repos/${owner}/${name}/contents/${encodeURI(path)}?ref=${encodeURIComponent(ref)}`,
-      { etag: true });
+    entries = await gh.get(url, { etag: true });
   } catch (e) {
-    if (e.status === 404) throw new RepoError(`There is no "${path || '/'}" in ${owner}/${name} at ${ref}.`);
+    if (e.status === 404) throw new RepoError(`There is no "${clean || 'repository root'}" in ${owner}/${name} at ${ref}.`);
     throw e;
   }
-  if (!Array.isArray(entries)) throw new RepoError(`"${path}" is a file, not a folder.`);
+  if (!Array.isArray(entries)) throw new RepoError(`"${clean}" is a file, not a folder.`);
 
   const dirs = entries.filter((e) => e.type === 'dir')
     .map((e) => ({ name: e.name, path: e.path }))
@@ -127,6 +137,7 @@ export async function browse(owner, name, ref, path = '') {
   return {
     dirs,
     files,
+    entries: entries.length,
     hasCargo: files.includes('Cargo.toml'),
     hasLock: files.includes('Cargo.lock'),
     rustFiles: files.filter((f) => f.endsWith('.rs')),
@@ -162,25 +173,56 @@ export async function findCrates(owner, name, ref) {
   return { crates: paths.slice(0, 60), truncated: !!tree.truncated };
 }
 
-/** What will actually be built from a chosen folder. */
-export async function inspectFolder(owner, name, ref, path) {
+/**
+ * What will actually be built from a chosen folder.
+ *
+ * Two independent sources agree or they do not: the directory listing, and the
+ * recursive tree that found every Cargo.toml in the repository. Either alone can
+ * come back thin — the tree truncates on large repositories, and a listing can
+ * fail in ways that look like an empty folder — so a crate the tree knows about
+ * is trusted even if the listing did not show it.
+ *
+ * @param {string[]|null} knownCrates  paths from findCrates(), if it ran
+ */
+export async function inspectFolder(owner, name, ref, path, knownCrates = null) {
   const level = await browse(owner, name, ref, path);
-  if (level.hasCargo) {
-    return { ok: true, projectType: 'cargo', why: 'Cargo.toml found — `cargo build --release`.', level };
-  }
-  if (level.rustFiles.length === 1) {
+  const here = String(path || '').replace(/^\/+|\/+$/g, '');
+  const treeSaysCrate = Array.isArray(knownCrates) && knownCrates.includes(here);
+
+  const where = here || 'the repository root';
+  const counted = `${level.entries} item${level.entries === 1 ? '' : 's'} listed` +
+    ` (${level.dirs.length} folder${level.dirs.length === 1 ? '' : 's'}, ${level.files.length} file${level.files.length === 1 ? '' : 's'})`;
+
+  if (level.hasCargo || treeSaysCrate) {
     return {
-      ok: true, projectType: 'single',
-      why: `No Cargo.toml, but one .rs file (${level.rustFiles[0]}) — compiled with rustc.`,
-      level,
+      ok: true, projectType: 'cargo', level,
+      why: level.hasCargo
+        ? 'Cargo.toml found — `cargo build --release`.'
+        : 'Cargo.toml found in the repository tree — `cargo build --release`.',
     };
   }
+
+  if (level.rustFiles.length === 1) {
+    return {
+      ok: true, projectType: 'single', level,
+      why: `No Cargo.toml, but one .rs file (${level.rustFiles[0]}) — compiled with rustc.`,
+    };
+  }
+
+  // An empty listing is a different problem from a folder with the wrong
+  // contents, and saying so is the difference between a fixable report and a
+  // confusing one.
+  if (!level.entries) {
+    return {
+      ok: false, projectType: null, level,
+      why: `GitHub returned an empty listing for ${where} at "${ref}". If the folder is not empty, the ref may be wrong.`,
+    };
+  }
+
   return {
-    ok: false,
-    projectType: null,
+    ok: false, projectType: null, level,
     why: level.rustFiles.length
-      ? `No Cargo.toml here, and ${level.rustFiles.length} .rs files — Thermite cannot tell which one is the program. Pick a folder with a Cargo.toml.`
-      : 'No Cargo.toml and no .rs files here. Pick the folder that holds the crate you want built.',
-    level,
+      ? `No Cargo.toml in ${where}, and ${level.rustFiles.length} .rs files — Thermite cannot tell which one is the program. Pick a folder with a Cargo.toml. ${counted}.`
+      : `No Cargo.toml and no .rs files in ${where}. Pick the folder that holds the crate you want built. ${counted}.`,
   };
 }
