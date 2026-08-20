@@ -73,13 +73,15 @@ Because it would see every user's authorization code and token in plaintext. Rej
 
 Repository name: **`thermite-crucible`** (fixed, predictable, no collision guessing, satisfies GitHub naming rules). Discovery is `GET /repos/{login}/thermite-crucible`; a 404 means "not provisioned".
 
-Provisioning is a strict sequence with idempotency at every step, so an interrupted first run resumes cleanly:
+Provisioning is **idempotent and self-repairing**, and is run on every visit rather than only when the repository is missing. That is not a nicety — see the two rules below, both of which were learned by getting them wrong.
 
 ```
-GET  /repos/{login}/thermite-crucible          → 404? continue : verify & repair
-POST /user/repos                                { name, private:false, auto_init:false,
+GET  /repos/{login}/thermite-crucible          → 404? create : adopt
+POST /user/repos                                { name, private:false, auto_init:TRUE,
                                                   has_issues:false, has_wiki:false,
                                                   has_projects:false, description, homepage }
+     poll GET /repos/… until it resolves AND its default branch has a commit
+POST /repos/{o}/{r}/branches/{default}/rename   { new_name: "main" }   ← only if needed
 PUT  /repos/{o}/{r}/actions/permissions         { enabled:true, allowed_actions:"selected" }
 PUT  /repos/{o}/{r}/actions/permissions/selected-actions
                                                 { github_owned_allowed:true,
@@ -87,21 +89,29 @@ PUT  /repos/{o}/{r}/actions/permissions/selected-actions
 PUT  /repos/{o}/{r}/actions/permissions/workflow
                                                 { default_workflow_permissions:"read",
                                                   can_approve_pull_request_reviews:false }
---- single atomic Git Data commit: the seed ---
+--- if the workflows are not present, one Git Data commit: the seed ---
 POST /repos/{o}/{r}/git/blobs        × N        (workflows, scripts, README, .gitignore)
-POST /repos/{o}/{r}/git/trees                   (one tree, N entries)
-POST /repos/{o}/{r}/git/commits                 message: "thermite: forge lining (no pour)"
-POST /repos/{o}/{r}/git/refs                    ref: refs/heads/main, sha: <commit>
---- orphan logs branch, created empty ---
-POST /repos/{o}/{r}/git/commits                 empty tree, no parents
+POST /repos/{o}/{r}/git/trees                   (one tree, N entries, on the initial commit)
+POST /repos/{o}/{r}/git/commits                 message: "thermite: line the crucible [skip ci]"
+PATCH /repos/{o}/{r}/git/refs/heads/main        { sha, force:false }
+--- orphan logs branch ---
+POST /repos/{o}/{r}/git/commits                 no parents
 POST /repos/{o}/{r}/git/refs                    refs/heads/crucible-logs
+--- verify via the CONTENTS API, not the Actions API ---
+GET  /repos/{o}/{r}/contents/.github/workflows/build.yml?ref=main
 ```
 
-`allowed_actions: "selected"` + `github_owned_allowed: true` + **empty patterns** means the build workflow may only use `actions/*` — a user cannot smuggle a third-party action into a build even if they somehow got a workflow edit through. `default_workflow_permissions: "read"` sets the floor to read-only; the build workflow raises exactly what it needs, and nothing else in the repo can raise anything.
+**Rule 1: never leave the repository empty.** `auto_init` is **true**. Creating an empty repo and building the first commit purely through the Git Data API is the elegant version, and it is fragile: a repository with no commits and no default branch behaves inconsistently across those endpoints, and when it fails it leaves a bare repo behind. The initial commit GitHub makes contains only a README, touches no `jobs/` path, and *predates `build.yml` existing at all* — so there is nothing it could conceivably trigger.
 
-The seed commit contains **no `jobs/` path**, which is the first of three independent reasons it cannot start a build (§12).
+**Rule 2: decide on evidence, not on history.** The seed step fires when `hasWorkflows()` is false, not when "I just created this repository". The earlier version only provisioned inside `if (!repo)`, so the moment a first attempt created the repo and then failed — on a permission, on the seed, on anything — every subsequent load found a repository, skipped setup, and left the user with an empty crucible and no way back. Idempotence is what makes a half-finished provision recoverable rather than permanent.
 
-**Repair path:** if the repo exists, Thermite compares the SHA of each workflow file against the SHA of the template it ships and, if they differ, offers "re-line the crucible" — a single commit that restores the workflows. This is how workflow upgrades roll out, and it is also the recovery path if a user hand-edits their repo into a broken state.
+**Verification uses the Contents API.** `GET /actions/workflows` lags behind a push by seconds to minutes, so a seed that landed perfectly could still report failure. Contents is immediate and authoritative; the Actions endpoint is used only to read the sweep's `disabled_inactivity` state, where lag does not matter.
+
+**The default branch must be `main`.** The build workflow triggers on `branches: [main]`; an account whose default branch name is set to something else would produce a crucible that silently never builds. Provisioning renames it, or explains precisely why it could not.
+
+**Failures name the missing permission.** A 403 on `.github/workflows/**` reports that **Workflows: Read and write** is missing — it is a separate permission from Contents and is the one people actually forget. A 403 on repository creation reports Administration, and notes that a token scoped to *selected repositories* cannot create one that does not exist yet.
+
+**Repair path:** the crucible carries a `.thermite-revision` file holding the hash of the shipped template. When it differs from `TEMPLATE_REVISION`, the connect station offers **re-line the crucible** — one commit that restores every workflow and script. This is how fixes to the runner scripts reach existing users, and it is also the recovery path if someone hand-edits their repo into a broken state.
 
 ---
 
@@ -302,14 +312,14 @@ Cleanup runs with `permissions: {contents: write, actions: read}` — it can nev
 
 Four layers, each independently sufficient:
 
-1. `auto_init: false` on repo creation — no initial commit exists, no push event.
-2. The seed commit is created through the **Git Data API**, which is still a push event, but it touches only `.github/`, `scripts/`, `README.md`, `.gitignore` — **no `jobs/` path**, so `paths: ['jobs/**']` filters it out before a run is created.
+1. **The initial commit predates the workflow entirely.** `auto_init: true` (§2) makes GitHub create a commit containing only a README. At that commit `build.yml` does not exist, so there is no workflow for the push to trigger. GitHub evaluates a `push`-triggered workflow using the workflow file *as of the pushed commit*, which makes this airtight rather than merely likely.
+2. The seed commit does introduce `build.yml`, but touches only `.github/`, `scripts/`, `README.md`, `.gitignore` — **no `jobs/` path** — so `paths: ['jobs/**']` filters it out before a run is created.
 3. The seed commit message ends with `[skip ci]`.
 4. `detect.mjs` finds no added manifest and exits `0`.
 
 The `crucible-logs` orphan branch is created with an empty tree and is excluded by `branches: [main]`.
 
-**Ordering note:** GitHub evaluates a `push`-triggered workflow using the workflow file *as of the pushed commit*. The seed commit is what first introduces `build.yml`, and it is filtered out; the first commit that can possibly trigger it is the first pour. There is no window in which a workflow runs against a repo that doesn't yet contain it.
+The same reasoning covers the two other commits provisioning can make: the `crucible-logs` orphan branch is excluded by `branches: [main]`, and a key registration (§20) writes only under `.thermite/keys/`. The first commit that can possibly trigger a build is the first pour.
 
 ---
 
@@ -320,7 +330,7 @@ The `crucible-logs` orphan branch is created with an empty tree and is excluded 
 - **No application secret exists in the frontend.** Mode A has none by definition. Mode B's `client_secret` lives only in the relay's environment; the page holds only the public `client_id`.
 - The token is held in **`sessionStorage`, not `localStorage`** — it dies with the tab, is not shared across tabs, and is not readable by a later visit. A "keep me signed in for this browser" opt-in is offered; it stores the token in IndexedDB **encrypted with AES-GCM under a non-extractable `CryptoKey`** derived via PBKDF2 (310 000 iterations) from a passphrase the user types. The raw token never touches persistent storage in either case.
 - The token is sent **only** as an `Authorization: Bearer` header to `https://api.github.com`. Never a query parameter, never a URL, never a fragment, never a log line, never an error message. The API client asserts the target origin before every request and throws if it isn't `api.github.com`.
-- A strict `Content-Security-Policy` (`default-src 'self'; connect-src 'self' https://api.github.com https://github.com; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`) plus `no-referrer` blocks exfiltration paths. **Zero third-party scripts** — no analytics, no CDN, no font host, no framework runtime. Nothing on the page can read the token except the page.
+- A strict `Content-Security-Policy` — `default-src 'none'`, `script-src 'self'`, `form-action 'none'`, `base-uri 'none'`, `frame-ancestors 'none'`, `no-referrer` — blocks the exfiltration paths. `connect-src` is `'self'`, `api.github.com`, and GitHub's release-asset hosts, which are needed to retrieve an ingot in-page (§34). **Zero third-party scripts**: no analytics, no CDN-hosted framework, no bundler runtime. The only third-party origin at all is Google Fonts, which serves stylesheets and font files and executes nothing; self-host the two families and drop it from the CSP if that is unacceptable in your threat model. Nothing on the page can read the token except the page.
 - Sign out clears sessionStorage, IndexedDB, in-memory state, and offers a deep link to GitHub's token revocation page.
 
 **In the build environment**
@@ -404,6 +414,9 @@ This is the sharper problem, because `cargo build` executes arbitrary user code:
 | Truly server-authoritative rate limiting | **Impossible** without a server. Client limits are advisory against a *determined self-attacker*, who is only able to exhaust **their own** account's quota. There is no shared resource to protect, which is the whole point of the per-user-repo design. |
 | Hiding the build repo | Not impossible, but rejected: private repos meter Actions minutes. |
 | Cancelling a run from the UI | Possible, but requires `Actions: write`. Deliberately not requested; the UI links to GitHub instead. |
+| Reading a release asset in-page | **Not guaranteed.** `github.com` and its asset hosts are not obliged to send CORS headers. Two automatic routes are attempted and a file-handback path is always available (§34). |
+| Encrypting anything outside a secure context | **Impossible.** `crypto.subtle` is withheld on `file://` and plain `http://`. Plain pours degrade gracefully; sealed pours are refused outright (§33). |
+| Forcing text to a given width with SVG `textLength` | **Not portable.** Safari ignores `lengthAdjust` here. Fit by measurement instead (§31). |
 
 Everything else in the brief is achievable exactly as specified.
 
@@ -411,63 +424,88 @@ Everything else in the brief is achievable exactly as specified.
 
 ## 18. Exact repository structure
 
-### `thermite-web` — the site (GitHub Pages, static, no build step)
+### `thermite-web` — the site
+
+The site is served **from the repository root**, so that GitHub Pages can deploy it without a subdirectory build step. It is a single HTML document, ES modules straight from Pages, no bundler and no framework. `git push` is the deploy.
 
 ```
 thermite-web/
-├── index.html                  single document, all scenes
+├── index.html                  single document, every scene
 ├── 404.html
 ├── .nojekyll
+├── .github/workflows/pages.yml deploys the site (and only the site)
 ├── styles/
-│   ├── core.css                tokens, type scale, layout primitives
-│   ├── scenes.css              the descent: scroll-linked stations
-│   └── crucible.css            terminal + pipeline + ingot
+│   ├── core.css                tokens, temperature palette, radius scale, the spine
+│   ├── scenes.css              the descent: stations riding the thread
+│   ├── crucible.css            furnace, terminal, pipeline, ingot, ledger
+│   └── manual.css              the forge manual and terms, encryption, cleanup dialogs
 ├── js/
 │   ├── config.js               targets, toolchains, limits, RELAY_URL
-│   ├── util.js                 ULID, base64, sanitising, retry, ETag store
+│   ├── util.js                 ULID, base64, hashing, retry, DOM helpers, env guards
 │   ├── github.js               API client: auth, retry, rate-limit, ETags
-│   ├── auth.js                 Mode A + Mode B, token vault
+│   ├── auth.js                 forge key + device flow, token vault
+│   ├── crypto.js               THERMITE-ENC v1, browser side
+│   ├── keys.js                 the two keypairs, registration, secret probe, vault
+│   ├── consent.js              EULA acknowledgement state
 │   ├── unzip.js                DecompressionStream ZIP reader + guards
-│   ├── provision.js            repo creation, workflow install, repair
-│   ├── submit.js               validation → blobs → tree → commit
+│   ├── provision.js            create, configure, seed, verify, repair
+│   ├── submit.js               validate → seal → blobs → tree → commit
 │   ├── watch.js                run/job/log/artifact polling state machine
-│   ├── workflows.js            generated: workflow templates as strings
+│   ├── retrieve.js             fetch, decrypt, verify, save the ingot
+│   ├── cleanup.js              per-pour, all, and decommission
+│   ├── docs.js                 terms and manual content + renderer
+│   ├── workflows.js            GENERATED — the crucible template as strings
 │   └── ui/
-│       ├── scroll.js           scene engine, scroll-linked progress
-│       ├── fx.js               pour-line canvas, spark field
+│       ├── spine.js            the thread: geometry, reveal, station placement
+│       ├── scroll.js           scene engine on top of the spine
+│       ├── fx.js               ambient spark field
 │       ├── crucible.js         molten pool driven by real log throughput
 │       ├── terminal.js         virtualised log view, ANSI, copy, follow
-│       └── history.js          past pours, rehydrated from GitHub
-└── tools/embed-workflows.mjs   regenerates js/workflows.js from the template
+│       ├── history.js          the ledger
+│       └── dialog.js           confirmation primitive for destructive actions
+├── build-repo-template/        the crucible, verbatim (NOT active in this repo)
+├── tools/embed-workflows.mjs   regenerates js/workflows.js from that template
+└── relay/                      optional stateless OAuth relay
 ```
 
-The site is a **single HTML document with no bundler and no framework** — ES modules straight from Pages. `git push` is the deploy. Nothing here can ever trigger a build: it is a different repository with no workflows that watch `jobs/**`.
+Two things about this layout matter:
+
+- **`build-repo-template/.github/` is not this repository's `.github/`.** The build and cleanup workflows sitting in it are inert here; they only become live once committed into a user's crucible. The site's own `.github/workflows/pages.yml` has no `jobs/**` path filter and no way to start a compilation.
+- **The Pages workflow publishes only the site.** It copies `index.html`, `404.html`, `.nojekyll`, `js/` and `styles/` into `_site` before uploading, so `build-repo-template/`, `tools/` and `relay/` stay in the repository as source material without being served.
 
 ### `thermite-crucible` — the per-user build repo (public, auto-created)
 
 ```
 thermite-crucible/
-├── README.md                   what this repo is, how to delete it
+├── README.md                   what this repo is, what a pour can and cannot do
 ├── .gitignore
+├── .thermite-revision          hash of the template that lined it
 ├── .github/workflows/
-│   ├── build.yml               push → jobs/** → detect → build → cast
+│   ├── build.yml               push → jobs/** → detect → unseal → compile → cast
 │   └── cleanup.yml             cron */6h → sweep spent pours
+├── .thermite/keys/             OPTIONAL, encryption only. Public keys, never private.
+│   ├── source-public.pem
+│   └── artifact-public.pem
 ├── scripts/
+│   ├── targets.mjs             authoritative target/runner table
 │   ├── detect.mjs              diff-based job discovery + validation
+│   ├── tenc.mjs                THERMITE-ENC v1, runner side
+│   ├── unseal.mjs              decrypt a sealed charge, then validate it
+│   ├── compile.sh              the compile driver, all three runner OSes
 │   ├── relay.mjs               live log streamer → crucible-logs
-│   ├── package.mjs             ingot packaging + checksums + pour.json
+│   ├── package.mjs             ingot packaging, sealing, checksums, release
 │   └── sweep.mjs               cleanup with liveness checks
 └── jobs/
     └── <ULID>/
         ├── manifest.json
-        └── source/…            main.rs, or the whole cargo project
+        └── source/…            or source.tenc, if the pour is sealed
 
 branch: crucible-logs (orphan)
 └── logs/
-    ├── <ULID>.log
+    ├── <ULID>.log      or  <ULID>.log.tenc
     └── <ULID>.state.json
 
-releases: pour-<ULID> → ingot archive + pour.log
+releases: pour-<ULID> → ingot archive (or .tenc) + build log
 ```
 
 ### `manifest.json`
@@ -485,13 +523,14 @@ releases: pour-<ULID> → ingot archive + pour.log
   "client": "thermite-web/1.0.0",
   "files": 42,
   "bytes": 118234,
-  "treeHash": "sha256:…"
+  "treeHash": "sha256:…",
+  "encryption": { "source": { "keyId": "…" }, "artifact": { "keyId": "…" } },
+  "cleanup": { "policy": "expire", "onFailure": "keep" }
 }
 ```
 
-Nothing in it is trusted. Every field is re-validated by `detect.mjs` before use, and `treeHash` is recomputed from the checked-out files to detect tampering between commit and build.
+Nothing in it is trusted. Every field is re-validated by `detect.mjs` before use. `treeHash` is recomputed from the checked-out files to detect tampering between commit and build — and is **optional**, because it is a tamper check rather than a security boundary; see §33. `encryption` and `cleanup` are absent on an ordinary pour.
 
----
 ---
 
 # Extension — consent, confidentiality, and cleanup
@@ -852,3 +891,256 @@ that the runner VM is destroyed, and the README says so rather than implying the
 of a lost artifact private key. Deletion of GitHub's own retained records with
 read-only Actions access. Containment of arbitrary compile-time code. All four
 are stated to the user in the interface, not only here.
+
+---
+---
+
+# Part III — the descent, and what running it taught
+
+Everything above still holds. This part covers the interface engine, and four
+things that only surfaced once real builds were running on real runners in real
+browsers. Each is written up because the fix is not obvious from the symptom.
+
+---
+
+## 31. The descent: one thread, and the stations that ride it
+
+The guided path is not a progress rail in the gutter. It is a single continuous
+thread running top to bottom through the middle of the page, and each station is
+a bead on it.
+
+**Geometry.** One path, drawn in **document** coordinates inside a fixed
+full-viewport SVG whose `<g>` is translated by `-scrollY`. That makes it one
+unbroken object that scrolls with the page rather than a per-section
+decoration. `x` at a given `y` is three sine harmonics summed at incommensurate
+wavelengths — `1.90vh`, `0.83vh`, `3.40vh`, fixed phases:
+
+```
+x(y) = cx + a₁·sin(2πy/l₁ + p₁) + a₂·sin(2πy/l₂ + p₂) + a₃·sin(2πy/l₃ + p₃)
+```
+
+A single sine is a metronome; you can see the next bend coming and every second
+station lands in the same place. Three incommensurate harmonics never repeat over
+a page height while remaining completely deterministic — identical on every
+reload. Two further strands run at a phase offset so the thread braids.
+
+**Smoothness.** Knots every ~80px, joined with a **Catmull-Rom** spline. The
+first version sampled every 14px and joined with vertical-handle cubics, which
+put a small S-bend at each of several hundred knots and read as a wobble. Fewer
+points and a real spline is smoother than many points and an approximation.
+
+**Bounds.** The thread is *struck* below the hero's buttons — `originY()` is the
+bottom of `.hero__cta` plus clearance — and *runs out* just past the last
+station's card, via `endY()`. Sampling, the length table, the reveal and the head
+marker all live between those two. Nothing is drawn above the hero, and nothing
+trails into the footer.
+
+**Reveal.** Scroll-linked `stroke-dashoffset`. The drawn length for a scroll
+position comes from a **binary search on the real path** using
+`getPointAtLength` — the path is monotonic in `y`, so this is exact regardless of
+how coarsely the curve is sampled, and there is no sample table to drift out of
+step with the geometry.
+
+**Placement is derived from the curve, not the other way round.** Each station's
+card is centred on `x` at its own mid-height, so the whole panel wanders with the
+thread. Two things this must get right:
+
+- **Measure the card, do not assume `--card-w`.** The hero overrides its own
+  width; positioning it as though it were the default pushed it 223px off the
+  right edge of a 1008px viewport. `getBoundingClientRect().width` is used
+  instead, and the hero is skipped entirely — it is not a bead on the thread, it
+  is where the thread is struck, and CSS centres it.
+- **Re-derive on every layout change.** A `ResizeObserver` on each station plus
+  `document.fonts.ready`, because unlocking a station or loading a face moves
+  every station below it.
+
+**Two layers straddle the content.** The solid thread sits at `z-index: 5`, below
+the cards, so it disappears behind a panel and re-emerges. A ghost copy sits at
+`z-index: 11`, above them, at low opacity with `mix-blend-mode: screen`, and the
+panels are `.90`/`.86` alpha rather than opaque. Without that second layer the
+line simply vanishes for most of the viewport and the continuity breaks; with it,
+the thread is visible running *underneath*, which is what makes the descent read
+as travelling along one continuous line.
+
+**Navigation lives on the thread.** Station nodes are rendered into the SVG on
+the exposed run above each card, states driven by the same lock/unlock model as
+before. There is no rail.
+
+### The design system
+
+- **The palette is a temperature ramp and it carries meaning**: cold steel for
+  anything waiting, oxide red for anything about to react, ember and pour for
+  work in progress, white-hot at the moment of linking, quenched cyan for a
+  finished ingot. Status colour is not decoration; it is the thermal state of
+  the job.
+- **A radius scale, not a blanket value**: `--r-xs` 7px for code chips, `--r-sm`
+  10px for inputs, `--r-md` 14px for cards and dialogs, `--r-lg` 20px for station
+  panels and drawers, `--r-pill` for everything you press. Avatars are circles.
+  The small rotated-square diamond markers stay sharp — they are the foundry
+  vernacular, and rounding them makes the whole thing generic.
+- **Type is sized against its container, not the viewport.** `.station__inner`
+  is a `container-type: inline-size` context and the display type uses `cqw`.
+  This is the same class of bug as the wordmark below: `vw` units guess at how
+  much room the text actually has.
+
+### Fitting the wordmark, and why `textLength` was the wrong answer
+
+`THERMITE` in a 900-weight expanded face at `clamp(60px, 15vw, 200px)` needs
+roughly `120vw`. It overflowed, and `overflow-x: hidden` trimmed it to `THERMI`.
+
+The obvious fix was SVG text with `textLength="1000"` and
+`lengthAdjust="spacingAndGlyphs"`, which is *supposed* to force the word to span
+its box exactly. **Safari ignores it here.** The text rendered at natural width —
+about 1150 units in a 1000-unit viewBox — centred, overflowing both sides, and
+came out as `HERMIT`. A worse failure than the one it replaced.
+
+It is plain text, sized in `cqw` against the hero card, and then **measured**:
+`_fitWordmark()` compares `scrollWidth` against the container and scales the font
+size by `available / natural` if it still runs wide. Measuring is the only
+approach every engine agrees on. The general lesson is worth stating: **when a
+layout guarantee depends on font metrics, measure — do not compute.**
+
+---
+
+## 32. The manual, and a grid that should never have been one
+
+Terms and documentation are full-screen blueprint overlays, rendered from
+structured content in `docs.js` through the same element helpers as the rest of
+the site, so they inherit the design system rather than importing a second one.
+
+One bug there is worth recording because the failure mode was so misleading. The
+terms pane has no chapter index, so it is a single column — but it said so with
+an **inline** `style="grid-template-columns:1fr"` overriding a two-column rule.
+When that attribute did not take effect, the pane's only child landed in the
+240px index column, and the heading rendered as `Tern / and / secu`: not wrapped,
+*clipped*. It is `#manual-terms .manual__body { display: block }` in the
+stylesheet now — there is no inline attribute left to go missing. The manual's
+headings are also sized in `cqw` against their own column, so a narrow pane
+scales its type down instead of clipping it.
+
+**The general rule:** if a layout depends on an attribute, it will eventually
+depend on that attribute being absent.
+
+---
+
+## 33. Degrading without Web Crypto
+
+`crypto.subtle` is only exposed in a **secure context**. `crypto.getRandomValues`
+is not restricted that way — which is exactly why a pour used to get as far as
+generating a ULID and then die on the first hash with
+`undefined is not an object`. On `file://` or a plain `http://` LAN address there
+is no SubtleCrypto; on `https://` and `http://localhost` there is. Deployed on
+Pages this never arises, because Pages is always https.
+
+The first fix disabled pours entirely, and that was wrong. The distinction that
+matters:
+
+| | Needs SubtleCrypto? | Behaviour without it |
+| --- | --- | --- |
+| `treeHash` — the manifest's tamper check | yes | **omitted.** The workflow only verifies it `if (manifest.treeHash)`, so a plain pour is complete without it. |
+| Duplicate-submission detection | no, now | moved to a plain FNV-1a `quickHash`. Explicitly not a security control — a wrong dedupe costs a duplicate build. |
+| Sealed source, sealed ingot, sealed log | yes | **refused outright**, with the reason named. |
+| Key generation, opening an ingot | yes | refused. |
+
+So a plaintext pour degrades gracefully and loses one integrity check, while
+encryption fails closed. Silently falling back from a sealed pour to a plaintext
+one would be the worst possible failure for that feature, and is never done.
+
+Every SubtleCrypto call goes through a `subtle()` accessor that throws a named
+`InsecureContextError` explaining what to do, rather than a raw `TypeError`; a
+banner says it at load rather than at the last step.
+
+---
+
+## 34. Getting the ingot into the browser
+
+`browser_download_url` points at `github.com`, which redirects to GitHub's asset
+host, and **neither is obliged to send `Access-Control-Allow-Origin`**. A static
+page cannot read the bytes without it, and Thermite cannot add one. The plain
+download link works because a *navigation* is not a *fetch* — the browser only
+enforces CORS on the second.
+
+Three routes, in order of how little they ask of the user:
+
+1. **Direct** at the public URL. Free when the browser allows it.
+2. **Through the API.** `api.github.com` always sends CORS headers, unlike
+   `github.com`, so this succeeds where route 1 is refused. It costs one extra
+   call to resolve the asset id, which is not encoded in the download URL — so
+   owner, repo and tag are parsed back out of it.
+3. **From a file.** A dialog with a drop zone, a file picker and a link to the
+   release. The file is opened, decrypted if sealed, and integrity-checked
+   entirely on the user's machine. Nothing is uploaded.
+
+Route 3 always works, which is the point of having it. The earlier version's
+error message told the user to "drop the file back here" and provided nowhere to
+drop it — a promise the interface did not keep.
+
+Whichever route produced the bytes, the definition of *returned* in §24 is
+unchanged, and a wrong file fails verification rather than producing something
+wrong.
+
+**If route 3 should never be needed:** the only transport that is *guaranteed*
+CORS-clean is the Contents API, because it is served from `api.github.com`.
+Committing the ingot to `crucible-logs` — the same trick the live log stream uses
+— would make in-page retrieval always work, at the cost of a second copy of every
+binary in the repository. Not done by default; the trade is real either way.
+
+---
+
+## 35. Runner portability
+
+Three runner operating systems, one bash script, and the differences are not
+where you expect.
+
+**macOS runners ship Bash 3.2.** In Bash 3.2 — and up to 4.3 — `set -u` treats
+the expansion of an **empty array** as an unbound variable:
+
+```bash
+set -u
+RUNAS=()
+"${RUNAS[@]}" cargo build     # → RUNAS[@]: unbound variable
+```
+
+Bash 5 on the Linux runners handles it. And on Linux the sandbox branch always
+fills `RUNAS` in, so it was never empty there anyway. On macOS the uid sandbox is
+skipped by design, `RUNAS` stayed empty, and the script died on the very line
+meant to invoke the compiler — *after* printing `##thermite:compiling`, so the
+log looked like a compile error when nothing had been compiled. `RUNAS` is seeded
+with `env` so it is never empty on any path.
+
+**Sealed pours must not print to stdout.** Actions job logs are publicly readable
+on a public repository, and compiler diagnostics quote source. On a sealed pour
+`compile.sh` sends compiler output only to `pour.log` — which the relay encrypts
+before publishing — and prints markers alone, so the run stays legible on GitHub
+without leaking anything. Sealing the source while streaming the compiler's
+rendering of it would have been theatre.
+
+**`GITHUB_ENV` does not beat job-level `env:`.** `unseal.mjs` resolves the
+entrypoint of a sealed charge and has to hand it to the compile step. Writing
+`THERMITE_ENTRY` to `GITHUB_ENV` looks right and is silently overridden by the
+job-level `env:` block, which holds the empty value `detect.mjs` emits for sealed
+pours. It writes `THERMITE_ENTRY_UNSEALED` instead, and `compile.sh` prefers it.
+
+---
+
+## 36. Deploying, and running it locally
+
+The site is the repository root and Pages serves it directly; `git push` is the
+deploy. The Pages workflow copies only the site files into `_site`, so the
+crucible template, tools and relay live in the repository without being
+published.
+
+Locally, serve it — do not open `index.html` from disk:
+
+```
+python3 -m http.server 8000     # then http://localhost:8000
+```
+
+`localhost` is a secure context and `file://` is not, so opening the file
+directly costs you Web Crypto and, with it, every encrypted pour (§33).
+
+After changing anything under `build-repo-template/`, run
+`node tools/embed-workflows.mjs`. That regenerates `js/workflows.js` and bumps
+`TEMPLATE_REVISION`, which is what causes existing crucibles to be offered a
+re-lining — without it, users keep running the old scripts on the runner no
+matter what the site says.
