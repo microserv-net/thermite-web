@@ -580,9 +580,11 @@ async function loadMyRepos(force) {
       title: r.private ? repos.whyPublicOnly(r.full) : r.full,
       onclick: () => chooseRepo(r),
     },
-      el('div', { class: 'repo__name', text: r.full }),
-      el('div', { class: 'repo__desc', text: r.description || (r.private ? 'private — cannot be built' : 'no description') }),
-      el('span', { class: 'repo__lang', 'data-rust': String(r.isRust), text: r.private ? 'private' : (r.language || '—') }),
+      el('span', { class: 'repo__name', text: r.full }),
+      el('span', { class: 'repo__lang', 'data-rust': String(r.isRust), 'data-private': String(r.private),
+        text: r.private ? 'private' : (r.language || 'no language') }),
+      el('span', { class: 'repo__when', text: r.pushedAt ? ago(r.pushedAt) : '' }),
+      el('span', { class: 'repo__desc', text: r.description || (r.private ? 'Private repositories cannot be built — the clone on the runner is anonymous.' : 'No description.') }),
     )));
   } catch (e) {
     list.replaceChildren(el('div', { class: 'empty', style: 'padding:26px' },
@@ -634,42 +636,9 @@ async function renderNavigator() {
   const info = S.repoInfo;
   if (!info) return;
 
-  const crumbs = ['', ...S.repoPath.split('/').filter(Boolean)
-    .map((_, i, arr) => arr.slice(0, i + 1).join('/'))];
-
-  const bar = el('div', { class: 'nav__bar' },
-    el('span', { text: info.full }),
-    el('select', {
-      'aria-label': 'Branch, tag or commit',
-      onchange: async (e) => {
-        S.repoRef = e.target.value;
-        S.repoPath = '';
-        S.repoCrates = await repos.findCrates(info.owner, info.name, S.repoRef).catch(() => null);
-        renderNavigator();
-      },
-    },
-      ...(S.repoRefs?.branches || []).map((b) =>
-        el('option', { value: b, selected: b === S.repoRef, text: b })),
-      ...(S.repoRefs?.tags?.length
-        ? [el('option', { disabled: true, text: '── tags ──' }),
-           ...S.repoRefs.tags.map((t) => el('option', { value: t, selected: t === S.repoRef, text: t }))]
-        : []),
-    ),
-    el('div', { class: 'nav__crumbs' }, ...crumbs.flatMap((p, i) => [
-      i ? el('span', { class: 'nav__sep', text: '/' }) : null,
-      el('button', {
-        class: 'nav__crumb', type: 'button',
-        disabled: p === S.repoPath,
-        text: i === 0 ? 'repository root' : p.split('/').pop(),
-        onclick: () => { S.repoPath = p; renderNavigator(); },
-      }),
-    ].filter(Boolean))),
-  );
-
-  const holder = el('div', { class: 'nav' }, bar,
-    el('div', { class: 'nav__list' },
-      el('div', { class: 'nav__row' }, el('span', { class: 'spinner' }), ' reading')));
+  const holder = el('div', { class: 'nav' });
   $('#repo-chosen').replaceChildren(holder);
+  paintNavShell(holder, null);
 
   let verdict;
   try {
@@ -681,41 +650,149 @@ async function renderNavigator() {
     return;
   }
 
-  const crateSet = new Set(S.repoCrates?.crates || []);
-  const rows = verdict.level.dirs.map((d) => el('button', {
-    class: 'nav__row', type: 'button',
-    'data-crate': String(crateSet.has(d.path)),
-    onclick: () => { S.repoPath = d.path; renderNavigator(); },
-  },
-    el('span', { text: d.name + '/' }),
-    crateSet.has(d.path) ? el('small', { text: 'crate' }) : null,
-  ));
+  paintNavShell(holder, verdict);
 
-  const quick = (S.repoCrates?.crates || []).length ? el('div', { class: 'crates' },
-    el('span', { class: 'crates__label', text: S.repoCrates.truncated
-      ? 'some crates found (repository too large to scan fully — use the navigator)'
-      : `${S.repoCrates.crates.length} crate${S.repoCrates.crates.length > 1 ? 's' : ''} found` }),
-    ...S.repoCrates.crates.map((p) => el('button', {
-      class: 'crate', type: 'button', 'aria-pressed': String(p === S.repoPath),
-      text: p || 'repository root',
-      onclick: () => { S.repoPath = p; renderNavigator(); },
-    })),
+  // The manifest is only worth a request once there is one to read, and it is
+  // what turns "a folder" into "the crate you are about to build".
+  if (verdict.ok && verdict.projectType === 'cargo') {
+    const manifest = await repos.readManifest(info.owner, info.name, S.repoRef, S.repoPath)
+      .catch(() => null);
+    if (manifest && S.repoPath === (verdict.level.path ?? S.repoPath)) {
+      paintNavShell(holder, verdict, manifest);
+    }
+  }
+}
+
+function paintNavShell(holder, verdict, manifest) {
+  const info = S.repoInfo;
+  const crumbs = ['', ...S.repoPath.split('/').filter(Boolean)
+    .map((_, i, arr) => arr.slice(0, i + 1).join('/'))];
+
+  const bar = el('div', { class: 'nav__bar' },
+    el('span', { class: 'nav__repo', text: info.full }),
+    el('select', {
+      class: 'nav__ref', 'aria-label': 'Branch, tag or commit',
+      onchange: async (e) => {
+        S.repoRef = e.target.value;
+        S.repoPath = '';
+        S.repoCrates = await repos.findCrates(info.owner, info.name, S.repoRef).catch(() => null);
+        renderNavigator();
+      },
+    },
+      ...(S.repoRefs?.branches || []).map((b) =>
+        el('option', { value: b, selected: b === S.repoRef, text: b })),
+      ...(S.repoRefs?.tags?.length
+        ? [el('option', { disabled: true, text: '\u2500\u2500 tags \u2500\u2500' }),
+           ...S.repoRefs.tags.map((t) => el('option', { value: t, selected: t === S.repoRef, text: t }))]
+        : []),
+    ),
+    el('div', { class: 'nav__sp' }),
+    info.pushedAt ? el('span', { class: 'nav__meta', text: `pushed ${ago(info.pushedAt)}` }) : null,
+  );
+
+  const crumbBar = el('div', { class: 'nav__crumbs' },
+    el('button', {
+      class: 'nav__up', type: 'button', disabled: !S.repoPath, title: 'Up one level',
+      text: '\u2191',
+      onclick: () => {
+        S.repoPath = S.repoPath.split('/').slice(0, -1).join('/');
+        renderNavigator();
+      },
+    }),
+    ...crumbs.flatMap((p, i) => [
+      i ? el('span', { class: 'nav__sep', text: '/' }) : null,
+      el('button', {
+        class: 'nav__crumb', type: 'button', disabled: p === S.repoPath,
+        text: i === 0 ? info.name : p.split('/').pop(),
+        onclick: () => { S.repoPath = p; renderNavigator(); },
+      }),
+    ].filter(Boolean)),
+  );
+
+  // ---- crate chips, with a filter once there are enough to need one -------
+  const crates = S.repoCrates?.crates || [];
+  const shown = S.crateFilter
+    ? crates.filter((p) => (p || 'repository root').toLowerCase().includes(S.crateFilter.toLowerCase()))
+    : crates;
+
+  const chips = crates.length ? el('div', { class: 'crates' },
+    el('div', { class: 'crates__head' },
+      el('span', { class: 'crates__label', text: S.repoCrates.truncated
+        ? `${crates.length} crates found so far \u2014 the repository is too large to scan fully, so use the navigator`
+        : `${crates.length} crate${crates.length > 1 ? 's' : ''} in this repository` }),
+      crates.length > 8 ? el('input', {
+        class: 'crates__filter', placeholder: 'filter\u2026', value: S.crateFilter || '',
+        'aria-label': 'Filter crates',
+        oninput: (e) => { S.crateFilter = e.target.value; paintNavShell(holder, verdict, manifest); },
+      }) : null),
+    el('div', { class: 'crates__wrap' },
+      ...shown.slice(0, 200).map((p) => el('button', {
+        class: 'crate', type: 'button', 'aria-pressed': String(p === S.repoPath),
+        text: p || 'repository root',
+        onclick: () => { S.repoPath = p; renderNavigator(); },
+      })),
+      shown.length ? null : el('span', { class: 'muted mono', text: 'nothing matches' })),
   ) : null;
 
-  holder.replaceChildren(bar,
-    quick,
-    el('div', { class: 'nav__list' }, ...(rows.length ? rows
-      : [el('div', { class: 'nav__row', style: 'cursor:default', text: 'no sub-folders here' })])),
-    el('div', { class: 'nav__foot' },
-      el('div', { class: 'nav__verdict', 'data-ok': String(verdict.ok) },
-        el('b', { text: S.repoPath || 'repository root' }), ' — ', verdict.why),
-      el('button', {
-        class: 'btn btn--small', type: 'button', disabled: !verdict.ok,
-        text: 'Build this folder',
-        onclick: () => acceptFolder(verdict),
-      }),
-    ),
+  // ---- the listing: folders you can enter, files for context -------------
+  const crateSet = new Set(crates);
+  let list;
+  if (!verdict) {
+    list = el('div', { class: 'nav__list' },
+      el('div', { class: 'nav__row', style: 'cursor:default' },
+        el('span', { class: 'spinner' }), ' reading'));
+  } else {
+    const dirs = verdict.level.dirs.map((d) => el('button', {
+      class: 'nav__row', type: 'button', 'data-kind': 'dir',
+      'data-crate': String(crateSet.has(d.path)),
+      onclick: () => { S.repoPath = d.path; renderNavigator(); },
+    },
+      el('span', { class: 'nav__label', text: d.name }),
+      crateSet.has(d.path) ? el('small', { text: 'crate' }) : null,
+    ));
+
+    // Files are not selectable, but showing them is the difference between a
+    // folder that looks empty and one you can see has a Cargo.toml in it.
+    const files = verdict.level.files.slice(0, 60).map((f) => el('div', {
+      class: 'nav__row', 'data-kind': 'file',
+      'data-key': String(f === 'Cargo.toml' || f === 'Cargo.lock' || f.endsWith('.rs')),
+    }, el('span', { class: 'nav__label', text: f })));
+
+    const rows = [...dirs, ...files];
+    list = el('div', { class: 'nav__list' }, ...(rows.length ? rows
+      : [el('div', { class: 'nav__row', style: 'cursor:default', text: 'this folder is empty' })]));
+  }
+
+  // ---- what will be built ------------------------------------------------
+  let detail = null;
+  if (manifest) {
+    const bits = [];
+    if (manifest.name) bits.push(`${manifest.name}${manifest.version ? ` v${manifest.version}` : ''}`);
+    if (manifest.edition) bits.push(`edition ${manifest.edition}`);
+    if (manifest.deps) bits.push(`${manifest.deps} direct dependenc${manifest.deps === 1 ? 'y' : 'ies'}`);
+    if (manifest.bins) bits.push(`${manifest.bins} explicit bin target${manifest.bins > 1 ? 's' : ''}`);
+    if (manifest.hasLib) bits.push('a lib target');
+    detail = el('div', { class: 'nav__detail' },
+      manifest.isVirtualWorkspace
+        ? el('span', { class: 'nav__warn' },
+            `A virtual workspace with ${manifest.members.length} member${manifest.members.length === 1 ? '' : 's'} and no package of its own. ` +
+            'cargo will build every member — pick a single member instead if you only want one binary.')
+        : el('span', { text: bits.join(' \u00b7 ') || 'Cargo.toml present.' }),
+    );
+  }
+
+  const foot = el('div', { class: 'nav__foot' },
+    el('div', { class: 'nav__verdict', 'data-ok': String(!!verdict?.ok) },
+      el('b', { text: S.repoPath || 'repository root' }), ' \u2014 ',
+      verdict ? verdict.why : 'reading\u2026'),
+    el('button', {
+      class: 'btn btn--small', type: 'button', disabled: !verdict?.ok,
+      text: 'Build this folder',
+      onclick: () => acceptFolder(verdict),
+    }),
   );
+
+  holder.replaceChildren(bar, crumbBar, chips, list, detail, foot);
 }
 
 function acceptFolder(verdict) {
@@ -725,6 +802,7 @@ function acceptFolder(verdict) {
     owner: info.owner, repo: info.name, ref: S.repoRef, subdir: S.repoPath,
   };
   S.projectName = S.repoPath ? S.repoPath.split('/').pop() : info.name;
+  S.crateFilter = '';
   S.files = null;
 
   $('#source-next').disabled = false;
@@ -1732,8 +1810,12 @@ function invalidateFrom() {
       toast('Target reset', `${t ? t.label : 'That target'} does not work with this choice: ${blocked.toLowerCase()}.`, 'info');
     }
   }
-  const ready = S.files && S.target && S.toolchain;
-  $('#source-next').disabled = !S.files;
+  // A pour has a source when it CARRIES one or NAMES one. Looking only at
+  // S.files meant accepting a repository folder immediately re-disabled
+  // Continue, because acceptFolder() calls straight back into here.
+  const haveSource = !!(S.files || S.repoSource);
+  const ready = haveSource && S.target && S.toolchain;
+  $('#source-next').disabled = !haveSource;
   if (ready) { descent.unlock('seal'); descent.unlock('confirm'); renderConfirm(); }
   else { descent.lock('seal'); descent.lock('confirm'); $('#confirm-sheet').replaceChildren(); }
 }

@@ -226,3 +226,79 @@ export async function inspectFolder(owner, name, ref, path, knownCrates = null) 
       : `No Cargo.toml and no .rs files in ${where}. Pick the folder that holds the crate you want built. ${counted}.`,
   };
 }
+
+/**
+ * Read the Cargo.toml of a chosen folder, so the interface can say what will
+ * actually be built rather than only that something will be.
+ *
+ * Deliberately shallow parsing: enough to name the package, spot a workspace,
+ * and count explicit binary targets. A real TOML parser is not worth shipping
+ * for four fields, and getting one of them wrong costs a label, not a build.
+ */
+export async function readManifest(owner, name, ref, dir = '') {
+  const clean = String(dir || '').replace(/^\/+|\/+$/g, '');
+  const path = clean ? `${clean}/Cargo.toml` : 'Cargo.toml';
+
+  let text;
+  try {
+    const res = await gh.rawFile(owner, name, path, ref);
+    text = res?.text;
+  } catch { return null; }
+  if (!text) return null;
+
+  return parseManifest(text);
+}
+
+/**
+ * Walk the file a line at a time rather than trying to carve sections out with
+ * one regex. A lookahead for "the next section header or the end" is a trap
+ * under the multiline flag, where `$` matches the end of every LINE — so the
+ * first attempt captured nothing and every package name came back null.
+ */
+export function parseManifest(text) {
+  const sections = new Map();
+  const arrays = new Map();
+  let current = null;
+  let bins = 0;
+
+  for (const raw of String(text).split(/\r?\n/)) {
+    const line = raw.replace(/\s*#.*$/, '').trim();
+    if (!line) continue;
+
+    const double = /^\[\[([^\]]+)\]\]$/.exec(line);
+    if (double) { current = null; if (double[1].trim() === 'bin') bins++; continue; }
+
+    const single = /^\[([^\]]+)\]$/.exec(line);
+    if (single) {
+      current = single[1].trim();
+      if (!sections.has(current)) sections.set(current, []);
+      continue;
+    }
+    if (current) sections.get(current).push(line);
+  }
+
+  const body = (head) => (sections.get(head) || []).join('\n');
+  const field = (head, key) =>
+    new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']+)["']`, 'm').exec(body(head))?.[1] || null;
+
+  const workspace = sections.has('workspace');
+  const hasPackage = (sections.get('package') || []).length > 0;
+
+  // members may run over several lines, so it is read from the raw text.
+  const members = workspace
+    ? (/^\s*members\s*=\s*\[([\s\S]*?)\]/m.exec(text)?.[1] || '')
+        .split(',').map((x) => x.trim().replace(/^["']|["']$/g, '')).filter(Boolean)
+    : [];
+
+  return {
+    name: field('package', 'name'),
+    version: field('package', 'version'),
+    edition: field('package', 'edition'),
+    isWorkspace: workspace,
+    isVirtualWorkspace: workspace && !hasPackage,
+    members,
+    bins,
+    hasLib: sections.has('lib'),
+    deps: (sections.get('dependencies') || []).filter((l) => /^[A-Za-z0-9_-]+\s*=/.test(l)).length,
+  };
+}
