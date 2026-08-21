@@ -33,9 +33,26 @@ export const LIMITS = {
   duplicateWindowMs: 60_000,
 };
 
+// Poll cadences, in ms. Two separate clocks, because the log changes constantly
+// and the run's status barely changes at all — fetching both together meant the
+// log could only ever be as fresh as the slowest thing it was bundled with.
+//
+// Fast log polling is affordable because every request carries an ETag, and a
+// 304 does not count against the REST rate limit. An unchanged log is free to
+// ask about; only a log that actually grew costs anything.
 export const POLL = {
-  run: 5_000,       // workflow run state
-  log: 2_500,       // live log tail
+  logHot: 800,      // the log grew on the last look — stay close to it
+  logWarm: 1_800,   // building, but quiet for a moment
+  logIdle: 4_000,   // queued, or nothing has moved in a while
+  logHidden: 15_000, // tab is in the background: nobody is reading it
+
+  runQueued: 2_500, // waiting to start is when run state actually changes
+  runBuilding: 6_000,
+  runSettling: 1_200, // just finished: the artifact and release land shortly after
+
+  tick: 200,        // scheduler granularity
+  hotFor: 4_000,    // how long growth keeps the log in its hot cadence
+
   slowFactor: 2,    // applied when the rate-limit budget gets thin
   budgetWarn: 1000,
   budgetStop: 300,

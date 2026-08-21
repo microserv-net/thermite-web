@@ -25,7 +25,20 @@ const BRANCH = 'crucible-logs';
 const API = process.env.GITHUB_API_URL || 'https://api.github.com';
 const REPO = process.env.GITHUB_REPOSITORY;
 const TOKEN = process.env.GITHUB_TOKEN;
-const INTERVAL = 2500;
+// The runner half of the latency budget.
+//
+// A fixed 2.5s flush meant the browser could never see a line sooner than 2.5s
+// after the compiler wrote it, however fast the page polled. So the file is
+// checked often and written adaptively: close behind the output while it is
+// flowing, backing off when it is not, and immediately when a marker appears —
+// those are the moments someone is actually waiting for.
+//
+// Every write is a commit on the log branch, so the floor is a real cost and
+// there is a ceiling on how many can happen per minute.
+const TICK = 350;
+const MIN_HOT = 900;
+const MIN_COOL = 4500;
+const MAX_PER_MINUTE = 48;
 const MAX_BYTES = 640 * 1024; // keep the tail; the release carries the full log
 
 // On a sealed pour the log is encrypted with the ARTIFACT public key before it
@@ -112,8 +125,25 @@ function tail(path) {
 
 let lastSize = -1;
 let lastPhase = '';
+let lastFlush = 0;
+let quietSince = Date.now();
+const flushes = [];
 const startedAt = new Date().toISOString();
 let lines = 0;
+
+/** Ramp from hot to cool the longer the compiler has had nothing to say. */
+function minGap() {
+  const quiet = Date.now() - quietSince;
+  if (quiet < 5_000) return MIN_HOT;
+  if (quiet > 30_000) return MIN_COOL;
+  return MIN_HOT + ((MIN_COOL - MIN_HOT) * (quiet - 5_000)) / 25_000;
+}
+
+function underQuota() {
+  const cutoff = Date.now() - 60_000;
+  while (flushes.length && flushes[0] < cutoff) flushes.shift();
+  return flushes.length < MAX_PER_MINUTE;
+}
 
 async function flush(final) {
   if (!existsSync(LOG)) return;
@@ -165,8 +195,29 @@ process.on('SIGTERM', async () => { await flush(true); process.exit(0); });
 
 (async () => {
   while (!existsSync(DONE)) {
-    try { await flush(false); } catch (e) { console.error('relay:', e.message); }
-    await sleep(INTERVAL);
+    try {
+      if (existsSync(LOG)) {
+        const size = statSync(LOG).size;
+        const changed = size !== lastSize;
+        if (changed) quietSince = Date.now();
+
+        // A marker is a phase change — toolchain ready, compiling, linking,
+        // packaged. Those jump the queue, because the pipeline in the browser
+        // moves on them and waiting out an interval is exactly the lag that
+        // makes the interface feel behind the build.
+        const urgent = changed && lastSize >= 0 && tail(LOG).text
+          .slice(Math.max(0, lastSize - size - 4096))
+          .includes('##thermite:');
+
+        const due = Date.now() - lastFlush >= (urgent ? 0 : minGap());
+        if (changed && due && underQuota()) {
+          await flush(false);
+          lastFlush = Date.now();
+          flushes.push(lastFlush);
+        }
+      }
+    } catch (e) { console.error('relay:', e.message); }
+    await sleep(TICK);
   }
   await sleep(400);           // let the last writes land on disk
   try { await flush(true); } catch (e) { console.error('relay final:', e.message); }

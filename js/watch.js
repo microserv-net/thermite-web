@@ -159,6 +159,7 @@ export class PourWatcher extends EventTarget {
       lastPollAt: null,
     };
     this.stopped = false;
+    this._lastGrowth = 0;
     this._sinceRunAppeared = 0;
     this._tailBytes = 0;
     this._lastLineCount = 0;
@@ -167,33 +168,84 @@ export class PourWatcher extends EventTarget {
 
   emit() { this.dispatchEvent(new CustomEvent('update', { detail: this.state })); }
 
-  stop() { this.stopped = true; }
+  stop() { this.stopped = true; this._unwake?.(); }
 
   get elapsed() {
     return (this.state.finishedAt || Date.now()) - this.state.startedAt;
   }
 
+  /**
+   * Two independent clocks on one scheduler.
+   *
+   * The old loop called pollRun() and pollLog() together on a fixed 2.5s tick,
+   * so a log line could not surface faster than the run status it was bundled
+   * with — and run status, which changes perhaps four times in a whole build,
+   * was being fetched as often as a log that changes every few hundred ms.
+   *
+   * Now each has its own due-time and its own adaptive interval. The log runs
+   * hot while output is arriving and backs off when it is not; the run polls
+   * slowly while building and quickly in the moments after completion, when the
+   * artifact and release are about to appear.
+   */
   async start() {
     this.emit();
-    let tick = 0;
+    this._logDue = 0;
+    this._runDue = 0;
+    this._lastGrowth = 0;
+
+    // A build that finishes while the tab is in the background should be up to
+    // date the instant it comes forward again, not one idle interval later.
+    const wake = () => { this._logDue = 0; this._runDue = 0; };
+    document.addEventListener('visibilitychange', wake);
+    addEventListener('focus', wake);
+    this._unwake = () => {
+      document.removeEventListener('visibilitychange', wake);
+      removeEventListener('focus', wake);
+    };
+
     while (!this.stopped) {
-      const factor = budget.remaining != null && budget.remaining < POLL.budgetWarn ? POLL.slowFactor : 1;
+      const now = Date.now();
+      const factor = budget.remaining != null && budget.remaining < POLL.budgetWarn
+        ? POLL.slowFactor : 1;
+
+      if (budget.remaining != null && budget.remaining < POLL.budgetStop && !this.isTerminal()) {
+        this.state.error = `Paused: only ${budget.remaining} GitHub API calls left this hour.`;
+        this.emit();
+        await sleep(30_000);
+        continue;
+      }
+
+      let worked = false;
       try {
-        await this.pollRun();
-        if (tick % 1 === 0) await this.pollLog();
-        this.state.lastPollAt = Date.now();
-        this.state.error = null;
+        if (now >= this._runDue) {
+          await this.pollRun();
+          this._runDue = Date.now() + this.runInterval() * factor;
+          worked = true;
+        }
+        if (now >= this._logDue && !this.stopped) {
+          const grew = await this.pollLog();
+          if (grew) this._lastGrowth = Date.now();
+          this._logDue = Date.now() + this.logInterval() * factor;
+          worked = true;
+        }
+        if (worked) {
+          this.state.lastPollAt = Date.now();
+          this.state.error = null;
+        }
       } catch (e) {
         this.state.error = e instanceof ApiError
           ? `${e.message}${e.advice ? ' — ' + e.advice : ''}`
           : e.message;
+        this._logDue = Date.now() + POLL.logIdle;
+        this._runDue = Date.now() + POLL.runBuilding;
       }
-      this.emit();
+
+      if (worked) this.emit();
 
       if (this.isTerminal()) {
         // A few more passes after completion: the release asset and the
         // artifact record both land a moment after the run reports done.
-        if (++this._misses > 3) {
+        if (++this._misses > 4) {
           // Succeeded, but nothing to hand over. Almost always a pour that has
           // already been cleaned up — the run record outlives its artifacts.
           if (this.state.status === 'SUCCESS' && !this.state.download && !this.state.artifact) {
@@ -203,17 +255,27 @@ export class PourWatcher extends EventTarget {
         }
       }
 
-      if (budget.remaining != null && budget.remaining < POLL.budgetStop && !this.isTerminal()) {
-        this.state.error = `Paused: only ${budget.remaining} GitHub API calls left this hour.`;
-        this.emit();
-        await sleep(30_000);
-        continue;
-      }
-
-      await sleep(POLL.log * factor);
-      tick++;
+      await sleep(POLL.tick);
     }
+
+    this._unwake?.();
     this.emit();
+  }
+
+  /** Close to the output while it is flowing; out of the way when it is not. */
+  logInterval() {
+    if (document.hidden) return POLL.logHidden;
+    if (this.isTerminal()) return POLL.logWarm;
+    if (this.state.status === 'QUEUED') return POLL.logIdle;
+    if (Date.now() - this._lastGrowth < POLL.hotFor) return POLL.logHot;
+    return POLL.logWarm;
+  }
+
+  runInterval() {
+    if (document.hidden) return POLL.logHidden;
+    if (this.isTerminal()) return POLL.runSettling;
+    if (this.state.status === 'QUEUED' || this.state.status === 'STARTING') return POLL.runQueued;
+    return POLL.runBuilding;
   }
 
   isTerminal() {
@@ -289,8 +351,10 @@ export class PourWatcher extends EventTarget {
 
   // -------------------------------------------------------------- logs -----
 
+  /** @returns {Promise<boolean>} whether new output arrived. */
   async pollLog() {
     const { login, id } = this.pour;
+    let grew = false;
     try {
       const [plainRes, sealedRes, stateRes] = await Promise.all([
         this.state.logSealed ? null : gh.rawFile(login, NAME, `logs/${id}.log`, APP.logBranch),
@@ -310,9 +374,13 @@ export class PourWatcher extends EventTarget {
         if (text !== this.state.log) {
           this.state.log = text;
           const lines = text.split('\n');
+          // Bytes rather than lines: cargo emits long stretches that end in a
+          // carriage return with no newline, and a line-only measure reads
+          // those as silence when the build is at its busiest.
           this.state.lineRate = Math.max(0, lines.length - this._lastLineCount);
           this._lastLineCount = lines.length;
           this.state.logLines = lines;
+          grew = true;
         } else {
           this.state.lineRate = 0;
         }
@@ -333,6 +401,7 @@ export class PourWatcher extends EventTarget {
     } catch (e) {
       if (e.status !== 404) throw e;
     }
+    return grew;
   }
 
   /**

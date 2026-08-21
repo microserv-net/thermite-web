@@ -35,32 +35,70 @@ export class Terminal {
   clear() {
     this.rendered = 0;
     this.lines = [];
+    this._lastNode = null;
+    this._lastText = null;
     this.view.replaceChildren();
+  }
+
+  /**
+   * How many lines are worth having a node for. A trailing empty string is the
+   * newline at the end of the log, not a line — rendering it would leave a
+   * blank row under the output and push the caret onto its own line.
+   */
+  static renderable(lines) {
+    return lines.length && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
   }
 
   /** @param {string[]} lines full log split by newline */
   write(lines, { live } = {}) {
     if (this.dot) this.dot.dataset.live = String(!!live);
 
-    if (lines.length < this.rendered) { this.clear(); }   // log was reset
-    if (lines.length === this.rendered) { this._caret(live); return; }
+    const count = Terminal.renderable(lines);
+    if (count < this.rendered) this.clear();          // the log was reset
 
-    const frag = document.createDocumentFragment();
-    for (let i = this.rendered; i < lines.length; i++) {
-      const raw = lines[i];
-      if (i === lines.length - 1 && raw === '') continue;
-      frag.append(renderLine(raw));
+    // The last line often grows without a newline — cargo spends most of a
+    // build extending one. Appending only whole lines meant that output sat
+    // invisible until the newline arrived, which is precisely the moment it
+    // stops being interesting. So the boundary line is re-rendered in place.
+    if (this.rendered > 0 && this._lastNode) {
+      const current = lines[this.rendered - 1] ?? '';
+      if (current !== this._lastText) {
+        const fresh = renderLine(current);
+        this._lastNode.replaceWith(fresh);
+        this._lastNode = fresh;
+        this._lastText = current;
+      }
     }
-    this.rendered = lines.length;
+
+    if (count > this.rendered) {
+      const frag = document.createDocumentFragment();
+      let last = null;
+      for (let i = this.rendered; i < count; i++) {
+        last = renderLine(lines[i]);
+        frag.append(last);
+      }
+
+      const first = this.view.firstElementChild;
+      if (first && first.classList?.contains('term__empty')) this.view.replaceChildren();
+
+      const caret = this.view.querySelector('.caret');
+      if (caret) caret.remove();
+      this.view.append(frag);
+
+      this._lastNode = last;
+      this._lastText = lines[count - 1];
+      this.rendered = count;
+
+      // Bound the DOM. A long build can produce tens of thousands of lines and
+      // the browser should not be holding all of them.
+      while (this.view.childElementCount > WINDOW) {
+        const gone = this.view.firstElementChild;
+        if (gone === this._lastNode) break;
+        gone.remove();
+      }
+    }
+
     this.lines = lines;
-
-    const first = this.view.firstElementChild;
-    if (first && first.classList?.contains('term__empty')) this.view.replaceChildren();
-    this.view.append(frag);
-
-    // Bound the DOM.
-    while (this.view.childElementCount > WINDOW) this.view.firstElementChild.remove();
-
     this._caret(live);
     if (this.follow) this.view.scrollTop = this.view.scrollHeight;
   }
